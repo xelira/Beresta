@@ -419,7 +419,10 @@ private:
         Symbol symbol;
         symbol.name = decl.name;
         symbol.kind = Symbol::Kind::Func;
-        symbol.type = resolve_type(decl.return_type_name, decl.line, decl.col);
+        symbol.type = decl.return_type_name == "словарь"
+                          ? TK::Map
+                          : resolve_type(decl.return_type_name, decl.line, decl.col);
+        if (symbol.type == TK::Map) symbol.ret = TK::Map;
         symbol.ret = symbol.type;
         symbol.params = param_types;
 

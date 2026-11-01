@@ -195,9 +195,15 @@ private:
         expect_op(")");
         expect_op("->");
 
-        const Token& return_type = expect_type();
-        decl->return_type_name = return_type.value;
-        decl->ret = *type_from_word(return_type.value);
+        const TypeSpec return_spec = parse_type_spec();
+        if (return_spec.is_array || return_spec.is_slice || return_spec.is_pointer ||
+            return_spec.is_struct) {
+            fail("возврат такого типа пока не поддерживается", decl->line, decl->col,
+                 static_cast<int>(decl->name.size()),
+                 "функция может вернуть простой тип или словарь");
+        }
+        decl->return_type_name = return_spec.name;
+        decl->ret = return_spec.kind;
         decl->body = parse_block();
         return decl;
     }

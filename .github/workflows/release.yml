@@ -44,7 +44,8 @@ jobs:
           ./build/berestac build examples/сайт.бер --target windows -o /tmp/site.exe
           ./build/berestac build examples/срезы.бер --target windows -o /tmp/slices.exe
           ./build/berestac build examples/словарь.бер --target windows -o /tmp/map.exe
-          file /tmp/site.exe /tmp/slices.exe /tmp/map.exe
+          ./build/berestac build examples/json.бер --target windows -o /tmp/json.exe
+          file /tmp/site.exe /tmp/slices.exe /tmp/map.exe /tmp/json.exe
 
       - name: Собрать лаунчеры
         run: |
