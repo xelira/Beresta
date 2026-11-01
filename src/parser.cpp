@@ -31,6 +31,7 @@ struct TypeSpec {
     bool is_slice = false;
     TypeKind slice_element = TypeKind::Void;
     std::string slice_element_name;
+    bool is_map = false;
 };
 
 [[noreturn]] void unexpected(const Token& token, const std::string& what) {
@@ -185,6 +186,7 @@ private:
                 param.pointee_struct = spec.pointee_struct;
                 param.is_slice = spec.is_slice;
                 param.slice_element = spec.slice_element;
+                param.is_map = spec.is_map;
                 decl->params.push_back(std::move(param));
 
                 if (!match_op(",")) break;
@@ -395,6 +397,14 @@ private:
             expect_op("]");
         }
 
+        if (check_kw("словарь")) {
+            advance();
+            spec.is_map = true;
+            spec.kind = TypeKind::Map;
+            spec.name = "словарь";
+            return spec;
+        }
+
         if (check_kw("срез")) {
             advance();
             spec.is_slice = true;
@@ -472,6 +482,7 @@ private:
         decl->pointee_struct = spec.pointee_struct;
         decl->is_slice = spec.is_slice;
         decl->slice_element = spec.slice_element;
+        decl->is_map = spec.is_map;
 
         if (match_op("=")) {
             if (spec.is_array) {

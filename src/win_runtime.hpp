@@ -473,4 +473,131 @@ void b_abort(const char* message) {
 long long b_run(const char* command) { return (long long)system(command); }
 
 void b_flush(void) { fflush(0); }
+
+/* --- словари -------------------------------------------------------- */
+
+#define B_MAP_CAPACITY 512
+#define B_MAP_BYTES 131072
+
+typedef struct {
+    int count;
+    int used;
+} BMapHeader;
+
+typedef struct {
+    int key_off;
+    int key_len;
+    int val_off;
+    int val_len;
+} BMapEntry;
+
+#define B_MAP_ENTRIES_OFF ((int)sizeof(BMapHeader))
+#define B_MAP_DATA_OFF ((int)(sizeof(BMapHeader) + sizeof(BMapEntry) * B_MAP_CAPACITY))
+#define B_MAP_DATA_CAPACITY (B_MAP_BYTES - B_MAP_DATA_OFF)
+
+static BMapHeader* b_map_header(void* map) { return (BMapHeader*)map; }
+static BMapEntry* b_map_entries(void* map) {
+    return (BMapEntry*)((char*)map + B_MAP_ENTRIES_OFF);
+}
+static char* b_map_data(void* map) { return (char*)map + B_MAP_DATA_OFF; }
+
+void* b_map_new(void) {
+    char* block = (char*)b_gc_alloc(B_MAP_BYTES);
+    memset(block, 0, sizeof(BMapHeader));
+    return block;
+}
+
+static int b_map_find(void* map, const char* key) {
+    if (map == 0) return -1;
+    BMapHeader* header = b_map_header(map);
+    BMapEntry* entries = b_map_entries(map);
+    char* data = b_map_data(map);
+    int length = (int)strlen(key);
+    for (int i = 0; i < header->count; ++i) {
+        if (entries[i].key_len == length &&
+            memcmp(data + entries[i].key_off, key, (size_t)length) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int b_map_append(void* map, const char* text, int* offset) {
+    BMapHeader* header = b_map_header(map);
+    char* data = b_map_data(map);
+    int length = (int)strlen(text);
+    if (header->used + length + 1 > B_MAP_DATA_CAPACITY) return 0;
+    *offset = header->used;
+    memcpy(data + header->used, text, (size_t)length);
+    data[header->used + length] = 0;
+    header->used += length + 1;
+    return 1;
+}
+
+long b_map_put(void* map, const char* key, const char* value) {
+    if (map == 0) return 0;
+    BMapHeader* header = b_map_header(map);
+    BMapEntry* entries = b_map_entries(map);
+
+    int index = b_map_find(map, key);
+    if (index >= 0) {
+        int value_offset = 0;
+        int value_length = (int)strlen(value);
+        if (!b_map_append(map, value, &value_offset)) return 0;
+        entries[index].val_off = value_offset;
+        entries[index].val_len = value_length;
+        return 1;
+    }
+
+    if (header->count >= B_MAP_CAPACITY) return 0;
+
+    int key_offset = 0;
+    int value_offset = 0;
+    if (!b_map_append(map, key, &key_offset)) return 0;
+    if (!b_map_append(map, value, &value_offset)) return 0;
+
+    entries[header->count].key_off = key_offset;
+    entries[header->count].key_len = (int)strlen(key);
+    entries[header->count].val_off = value_offset;
+    entries[header->count].val_len = (int)strlen(value);
+    header->count += 1;
+    return 1;
+}
+
+char* b_map_get(void* map, const char* key) {
+    int index = b_map_find(map, key);
+    if (index < 0) return (char*)"";
+    BMapEntry* entries = b_map_entries(map);
+    return b_map_data(map) + entries[index].val_off;
+}
+
+long b_map_has(void* map, const char* key) { return b_map_find(map, key) >= 0; }
+
+long b_map_remove(void* map, const char* key) {
+    int index = b_map_find(map, key);
+    if (index < 0 || map == 0) return 0;
+    BMapHeader* header = b_map_header(map);
+    BMapEntry* entries = b_map_entries(map);
+    for (int i = index; i + 1 < header->count; ++i) entries[i] = entries[i + 1];
+    header->count -= 1;
+    return 1;
+}
+
+long long b_map_size(void* map) {
+    if (map == 0) return 0;
+    return b_map_header(map)->count;
+}
+
+char* b_map_key_at(void* map, long long index) {
+    if (map == 0 || index < 0 || index >= b_map_size(map)) return (char*)"";
+    BMapEntry* entries = b_map_entries(map);
+    return b_map_data(map) + entries[index].key_off;
+}
+
+char* b_map_value_at(void* map, long long index) {
+    if (map == 0 || index < 0 || index >= b_map_size(map)) return (char*)"";
+    BMapEntry* entries = b_map_entries(map);
+    return b_map_data(map) + entries[index].val_off;
+}
+
 )C";

@@ -4,7 +4,7 @@
 #include <string>
 
 //: Типы бересты. Массив, уклад и указатель — отдельные виды.
-enum class TypeKind { Int, Float, String, Bool, Void, Array, Struct, Pointer, Slice };
+enum class TypeKind { Int, Float, String, Bool, Void, Array, Struct, Pointer, Slice, Map };
 
 inline const char* type_name(TypeKind kind) {
     switch (kind) {
@@ -17,6 +17,7 @@ inline const char* type_name(TypeKind kind) {
         case TypeKind::Struct: return "уклад";
         case TypeKind::Pointer: return "указатель";
         case TypeKind::Slice: return "срез";
+        case TypeKind::Map: return "словарь";
     }
     return "?";
 }

@@ -966,6 +966,8 @@ private:
                 fail("устой-указатель не поддерживается", decl.line, decl.col);
             case TypeKind::Slice:
                 fail("устой-срез не поддерживается", decl.line, decl.col);
+            case TypeKind::Map:
+                fail("устой-словарь не поддерживается", decl.line, decl.col);
         }
     }
 
@@ -1046,6 +1048,7 @@ private:
                 case TypeKind::Int:
                 case TypeKind::Bool:
                 case TypeKind::Pointer:
+                case TypeKind::Map:
                     instruction("xor %eax, %eax");
                     break;
                 default:
@@ -1255,6 +1258,8 @@ private:
                 fail("указатель нельзя молвить", stmt.line, stmt.col);
             case TypeKind::Slice:
                 fail("срез нельзя молвить", stmt.line, stmt.col);
+            case TypeKind::Map:
+                fail("словарь нельзя молвить", stmt.line, stmt.col);
         }
     }
 

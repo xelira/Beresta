@@ -118,6 +118,7 @@ struct VarDecl : Stmt {
     bool pointee_struct = false;
     bool is_slice = false;
     TypeKind slice_element = TypeKind::Void;
+    bool is_map = false;
 };
 
 struct IndexAssign : Stmt {
@@ -223,6 +224,7 @@ struct Param : Node {
     bool pointee_struct = false;
     bool is_slice = false;
     TypeKind slice_element = TypeKind::Void;
+    bool is_map = false;
 };
 
 struct FuncDecl : Stmt {

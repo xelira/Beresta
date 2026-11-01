@@ -52,6 +52,14 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"сбросить", {Overload{{}, TK::Void, "b_flush"}}},
         {"паника", {Overload{{TK::String}, TK::Void, "b_abort"}}},
         {"выполнить", {Overload{{TK::String}, TK::Int, "b_run"}}},
+        {"создать_словарь", {Overload{{}, TK::Map, "b_map_new"}}},
+        {"положить", {Overload{{TK::Map, TK::String, TK::String}, TK::Bool, "b_map_put"}}},
+        {"взять", {Overload{{TK::Map, TK::String}, TK::String, "b_map_get"}}},
+        {"есть_ключ", {Overload{{TK::Map, TK::String}, TK::Bool, "b_map_has"}}},
+        {"удалить_ключ", {Overload{{TK::Map, TK::String}, TK::Bool, "b_map_remove"}}},
+        {"размер", {Overload{{TK::Map}, TK::Int, "b_map_size"}}},
+        {"ключ_по_номеру", {Overload{{TK::Map, TK::Int}, TK::String, "b_map_key_at"}}},
+        {"значение_по_номеру", {Overload{{TK::Map, TK::Int}, TK::String, "b_map_value_at"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},
@@ -69,6 +77,9 @@ std::string param_text(const ParamInfo& param) {
     }
     if (param.type == TypeKind::Struct) {
         return param.layout != nullptr ? param.layout->name : "уклад";
+    }
+    if (param.type == TypeKind::Map) {
+        return "словарь";
     }
     if (param.type == TypeKind::Slice) {
         return "срез " + std::string(type_name(param.element));
@@ -335,7 +346,13 @@ private:
             }
 
             ParamInfo info;
-            if (param.is_slice) {
+            if (param.is_map) {
+                if (param.is_array) {
+                    fail("массив словарей в параметрах не поддерживается", param.line,
+                         param.col);
+                }
+                info.type = TK::Map;
+            } else if (param.is_slice) {
                 if (param.is_array) {
                     fail("массив срезов в параметрах не поддерживается", param.line, param.col);
                 }
@@ -540,6 +557,31 @@ private:
     }
 
     void check_var(VarDecl& decl) {
+        if (decl.is_map) {
+            if (decl.is_array) {
+                fail("массив словарей пока не поддерживается", decl.line, decl.col);
+            }
+            if (decl.value) {
+                const TK value_type = check_expr(*decl.value);
+                if (value_type != TK::Map) {
+                    fail("словарь «" + decl.name + "» требует значения типа словарь", decl.line,
+                         decl.col, static_cast<int>(decl.name.size()),
+                         "создайте его: создать_словарь()");
+                }
+            }
+
+            Symbol symbol;
+            symbol.name = decl.name;
+            symbol.type = TK::Map;
+            symbol.kind = Symbol::Kind::Var;
+            symbol.cname = fresh_cname("b");
+            symbol.line = decl.line;
+            symbol.col = decl.col;
+            decl.symbol = add(std::move(symbol));
+            scope_->define(decl.symbol);
+            return;
+        }
+
         if (decl.is_slice) {
             if (decl.is_array) {
                 fail("массив срезов пока не поддерживается", decl.line, decl.col,
@@ -745,6 +787,16 @@ private:
                  "меняйте поля: " + stmt.name + ".поле = значение;");
         }
 
+        if (symbol->type == TK::Map) {
+            const TK value_type = check_expr(*stmt.value);
+            if (value_type != TK::Map) {
+                fail("в словарь можно положить только словарь", stmt.value->line,
+                     stmt.value->col);
+            }
+            stmt.symbol = symbol;
+            return;
+        }
+
         if (symbol->type == TK::Slice) {
             const TK value_type = check_expr(*stmt.value);
             auto* call = dynamic_cast<Call*>(stmt.value.get());
@@ -803,6 +855,10 @@ private:
         if (value_type == TK::Slice) {
             fail("срез нельзя молвить целиком", stmt.value->line, stmt.value->col, 1,
                  "печатайте элементы по одному");
+        }
+        if (value_type == TK::Map) {
+            fail("словарь нельзя молвить целиком", stmt.value->line, stmt.value->col, 1,
+                 "печатайте пары по одной");
         }
     }
 
@@ -1183,7 +1239,7 @@ private:
         }
 
         if (type == TK::Void || type == TK::Array || type == TK::Pointer ||
-            type == TK::Slice) {
+            type == TK::Slice || type == TK::Map) {
             fail(std::string("нельзя взять адрес значения типа ") + type_name(type), expr.line,
                  expr.col);
         }
@@ -1392,6 +1448,8 @@ private:
                           arg.count == info.count;
             } else if (info.type == TK::Struct) {
                 matches = arg_types[i] == TK::Struct && arg.layout == info.layout;
+            } else if (info.type == TK::Map) {
+                matches = arg_types[i] == TK::Map;
             } else if (info.type == TK::Slice) {
                 matches = arg_types[i] == TK::Slice && arg.element == info.element;
             } else if (info.type == TK::Pointer) {
@@ -1408,6 +1466,8 @@ private:
                     actual = "[" + std::to_string(arg.count) + "]" + type_name(arg.element);
                 } else if (arg_types[i] == TK::Struct && arg.layout != nullptr) {
                     actual = arg.layout->name;
+                } else if (arg_types[i] == TK::Map) {
+                    actual = "словарь";
                 } else if (arg_types[i] == TK::Slice) {
                     actual = "срез " + std::string(type_name(arg.element));
                 } else if (arg_types[i] == TK::Pointer) {
