@@ -17,6 +17,7 @@ namespace {
 const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
     static const std::unordered_map<std::string, std::vector<Overload>> table = {
         {"длина", {Overload{{TK::String}, TK::Int, "b_str_len"}}},
+        {"байты", {Overload{{TK::String}, TK::Int, "b_str_bytes"}}},
         {"из_строки", {Overload{{TK::String}, TK::Int, "b_str_to_int"}}},
         {"внемли", {Overload{{}, TK::String, "b_read_line"}}},
         {"слушает", {Overload{{TK::String}, TK::String, "b_read_file"}}},

@@ -258,6 +258,10 @@ b_str_len:
     ret
 
     .p2align 4
+b_str_bytes:
+    jmp strlen@PLT
+
+    .p2align 4
 b_str_to_int:
     xor %esi, %esi
     mov $10, %edx
