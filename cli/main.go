@@ -21,7 +21,7 @@ import (
 	"strings"
 )
 
-const version = "0.9.1"
+const version = "0.10.0"
 
 func main() {
 	arguments := os.Args[1:]

@@ -77,6 +77,9 @@ struct Call : Expr {
     std::vector<ExprPtr> args;
     std::string cname;
     bool is_builtin = false;
+    //: для «нарезать»: исходный массив и тип элемента
+    const Symbol* slice_source = nullptr;
+    TypeKind slice_element = TypeKind::Void;
     explicit Call(std::string n) : name(std::move(n)) {}
 };
 
@@ -113,6 +116,8 @@ struct VarDecl : Stmt {
     TypeKind pointee = TypeKind::Void;
     std::string pointee_name;
     bool pointee_struct = false;
+    bool is_slice = false;
+    TypeKind slice_element = TypeKind::Void;
 };
 
 struct IndexAssign : Stmt {
@@ -216,6 +221,8 @@ struct Param : Node {
     TypeKind pointee = TypeKind::Void;
     std::string pointee_name;
     bool pointee_struct = false;
+    bool is_slice = false;
+    TypeKind slice_element = TypeKind::Void;
 };
 
 struct FuncDecl : Stmt {

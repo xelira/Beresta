@@ -575,6 +575,7 @@ private:
                    ".Lmsg_bounds:\n    .string \"выход за границы массива\"\n"
                    ".Lmsg_oom:\n    .string \"не хватило памяти\"\n"
                    ".Lmsg_null:\n    .string \"пустой указатель\"\n"
+                   ".Lmsg_slice:\n    .string \"неверный срез\"\n"
                    ".Lmode_r:\n    .string \"r\"\n"
                    ".Lmode_w:\n    .string \"w\"\n";
     }
@@ -703,6 +704,32 @@ private:
         }
     }
 
+    //: Кладёт указатель и длину среза в два регистра.
+    void load_slice(const Symbol* symbol, const std::string& pointer, const std::string& length) {
+        if (symbol->by_ref) {
+            instruction("mov " + slot_ref(symbol->slot) + ", %r11");
+            instruction("mov (%r11), " + pointer);
+            instruction("mov 8(%r11), " + length);
+        } else {
+            instruction("mov " + slot_ref(symbol->slot + 1) + ", " + pointer);
+            instruction("mov " + slot_ref(symbol->slot) + ", " + length);
+        }
+    }
+
+    void emit_slice_check(const std::string& index, const std::string& length) {
+        const std::string bad = new_label("slice_bad");
+        const std::string ok = new_label("slice_ok");
+        instruction("cmp $0, " + index);
+        instruction("jl " + bad);
+        instruction("cmp " + length + ", " + index);
+        instruction("jge " + bad);
+        instruction("jmp " + ok);
+        label(bad);
+        instruction("lea .Lmsg_slice(%rip), %rdi");
+        call("b_panic");
+        label(ok);
+    }
+
     //: Кладёт адрес уклада в %rdx.
     void load_struct_base(const Symbol* symbol) {
         if (symbol->by_ref) {
@@ -722,6 +749,8 @@ private:
                     next += node->symbol->count;
                 } else if (node->symbol->type == TypeKind::Struct) {
                     next += node->symbol->layout->size_slots;
+                } else if (node->symbol->type == TypeKind::Slice) {
+                    next += 2;
                 } else {
                     next += 1;
                 }
@@ -935,6 +964,8 @@ private:
                 fail("устой-уклад не поддерживается", decl.line, decl.col);
             case TypeKind::Pointer:
                 fail("устой-указатель не поддерживается", decl.line, decl.col);
+            case TypeKind::Slice:
+                fail("устой-срез не поддерживается", decl.line, decl.col);
         }
     }
 
@@ -985,6 +1016,16 @@ private:
     }
 
     void emit_var(VarDecl& decl) {
+        if (decl.symbol->type == TypeKind::Slice) {
+            if (decl.value == nullptr) {
+                instruction("movq $0, " + slot_ref(decl.symbol->slot));
+                instruction("movq $0, " + slot_ref(decl.symbol->slot + 1));
+                return;
+            }
+            auto* call = dynamic_cast<Call*>(decl.value.get());
+            if (call == nullptr) fail("срез создаётся через нарезать", decl.line, decl.col);
+            return emit_slice_create(*call, decl.symbol);
+        }
         if (decl.symbol->type == TypeKind::Struct) return emit_struct_init(decl);
         if (decl.symbol->type == TypeKind::Array) return emit_array_init(decl);
 
@@ -1100,8 +1141,13 @@ private:
         }
         pop_value(TypeKind::Int);  // индекс в %rcx
 
-        emit_bounds(stmt, stmt.symbol->count, "%rcx");
-        load_array_base(stmt.symbol);
+        if (stmt.symbol->type == TypeKind::Slice) {
+            load_slice(stmt.symbol, "%rdx", "%r8");
+            emit_slice_check("%rcx", "%r8");
+        } else {
+            emit_bounds(stmt, stmt.symbol->count, "%rcx");
+            load_array_base(stmt.symbol);
+        }
 
         if (stmt.symbol->element == TypeKind::Float) {
             instruction("movsd %xmm0, (%rdx,%rcx,8)");
@@ -1110,7 +1156,46 @@ private:
         }
     }
 
+    void emit_slice_create(Call& node, const Symbol* target) {
+        if (node.slice_source == nullptr) {
+            fail("повреждено дерево: у нарезать нет массива", node.line, node.col);
+        }
+
+        emit_expr_as_int(*node.args[1]);
+        push_value(TypeKind::Int);
+        emit_expr_as_int(*node.args[2]);
+        pop_value(TypeKind::Int);  // from в %rcx, to в %rax
+
+        const std::string bad = new_label("slice_create_bad");
+        const std::string done = new_label("slice_create_ok");
+        instruction("cmp $0, %rcx");
+        instruction("jl " + bad);
+        instruction("cmp %rcx, %rax");
+        instruction("jl " + bad);
+        instruction("cmp $" + std::to_string(node.slice_source->count) + ", %rax");
+        instruction("jg " + bad);
+
+        instruction("mov %rax, %r8");  // to
+        instruction("mov %rcx, %r9");  // from
+        load_array_base(node.slice_source);
+        instruction("lea (%rdx,%r9,8), %r10");
+        instruction("sub %r9, %r8");
+        instruction("mov %r10, " + slot_ref(target->slot + 1));
+        instruction("mov %r8, " + slot_ref(target->slot));
+        instruction("jmp " + done);
+
+        label(bad);
+        instruction("lea .Lmsg_slice(%rip), %rdi");
+        call("b_panic");
+        label(done);
+    }
+
     void emit_assign(Assign& stmt) {
+        if (stmt.symbol->type == TypeKind::Slice) {
+            auto* call = dynamic_cast<Call*>(stmt.value.get());
+            if (call == nullptr) fail("срезу нужен нарезать", stmt.line, stmt.col);
+            return emit_slice_create(*call, stmt.symbol);
+        }
         if (stmt.value->widen_to_float) {
             emit_expr_as_float(*stmt.value);
         } else {
@@ -1168,6 +1253,8 @@ private:
                 fail("уклад нельзя молвить", stmt.line, stmt.col);
             case TypeKind::Pointer:
                 fail("указатель нельзя молвить", stmt.line, stmt.col);
+            case TypeKind::Slice:
+                fail("срез нельзя молвить", stmt.line, stmt.col);
         }
     }
 
@@ -1256,15 +1343,22 @@ private:
         const std::string cond = new_label("fe_cond");
         const std::string step = new_label("fe_step");
         const std::string done = new_label("fe_end");
+        const bool is_slice = stmt.source->type == TypeKind::Slice;
         const int count = stmt.source->count;
 
         instruction("movq $0, " + slot_ref(stmt.counter_slot));
 
         label(cond);
         instruction("mov " + slot_ref(stmt.counter_slot) + ", %rax");
-        instruction("cmp $" + std::to_string(count) + ", %rax");
-        instruction("jge " + done);
-        load_array_base(stmt.source);
+        if (is_slice) {
+            load_slice(stmt.source, "%rdx", "%rcx");
+            instruction("cmp %rcx, %rax");
+            instruction("jge " + done);
+        } else {
+            instruction("cmp $" + std::to_string(count) + ", %rax");
+            instruction("jge " + done);
+            load_array_base(stmt.source);
+        }
 
         if (stmt.symbol->type == TypeKind::Float) {
             instruction("movsd (%rdx,%rax,8), %xmm0");
@@ -1327,6 +1421,9 @@ private:
         }
         if (symbol->type == TypeKind::Struct) {
             fail("уклад нельзя использовать как значение", expr.line, expr.col);
+        }
+        if (symbol->type == TypeKind::Slice) {
+            fail("срез нельзя использовать как значение", expr.line, expr.col);
         }
         if (symbol->type == TypeKind::Float) {
             instruction("movsd " + mem(symbol) + ", %xmm0");
@@ -1655,6 +1752,18 @@ private:
     }
 
     void emit_index(Index& expr) {
+        if (expr.symbol->type == TypeKind::Slice) {
+            emit_expr_as_int(*expr.index);
+            load_slice(expr.symbol, "%rdx", "%rcx");
+            emit_slice_check("%rax", "%rcx");
+            if (expr.element == TypeKind::Float) {
+                instruction("movsd (%rdx,%rax,8), %xmm0");
+            } else {
+                instruction("mov (%rdx,%rax,8), %rax");
+            }
+            return;
+        }
+
         emit_expr_as_int(*expr.index);
         emit_bounds(expr, expr.count, "%rax");
         load_array_base(expr.symbol);
@@ -1695,8 +1804,13 @@ private:
 
         if (auto* index = dynamic_cast<Index*>(&expr)) {
             emit_expr_as_int(*index->index);
-            emit_bounds(*index, index->count, "%rax");
-            load_array_base(index->symbol);
+            if (index->symbol->type == TypeKind::Slice) {
+                load_slice(index->symbol, "%rdx", "%rcx");
+                emit_slice_check("%rax", "%rcx");
+            } else {
+                emit_bounds(*index, index->count, "%rax");
+                load_array_base(index->symbol);
+            }
             instruction("lea (%rdx,%rax,8), %rax");
             return;
         }
@@ -1741,6 +1855,14 @@ private:
             instruction("mov " + slot_ref(ident->symbol->slot) + ", %rax");
             return;
         }
+        if (ident->symbol->type == TypeKind::Slice) {
+            if (ident->symbol->by_ref) {
+                instruction("mov " + slot_ref(ident->symbol->slot) + ", %rax");
+            } else {
+                instruction("lea " + slot_ref(ident->symbol->slot + 1) + ", %rax");
+            }
+            return;
+        }
         emit_lvalue_address(expr);
     }
 
@@ -1760,6 +1882,23 @@ private:
                 instruction("cvtsi2sdq %rax, %xmm0");
                 return;
             }
+            if (call_expr.cname == "#slice_create") {
+                fail("срез создаётся только при объявлении или присваивании", call_expr.line,
+                     call_expr.col);
+            }
+            if (call_expr.cname == "#slice_len") {
+                auto* ident = dynamic_cast<Ident*>(call_expr.args.at(0).get());
+                if (ident == nullptr || ident->symbol == nullptr) {
+                    fail("длина среза требует имя среза", call_expr.line, call_expr.col);
+                }
+                if (ident->symbol->by_ref) {
+                    instruction("mov " + slot_ref(ident->symbol->slot) + ", %r11");
+                    instruction("mov 8(%r11), %rax");
+                } else {
+                    instruction("mov " + slot_ref(ident->symbol->slot) + ", %rax");
+                }
+                return;
+            }
             if (call_expr.cname == "#live") {
                 if (windows()) {
                     call("b_gc_live_bytes");
@@ -1777,7 +1916,8 @@ private:
 
         const int base_depth = stack_depth_;
         for (auto& arg : call_expr.args) {
-            if (arg->type == TypeKind::Array || arg->type == TypeKind::Struct) {
+            if (arg->type == TypeKind::Array || arg->type == TypeKind::Struct ||
+                arg->type == TypeKind::Slice) {
                 emit_object_address(*arg);
                 push_value(TypeKind::Int);
             } else if (arg->widen_to_float) {

@@ -28,6 +28,9 @@ struct TypeSpec {
     TypeKind pointee = TypeKind::Void;
     std::string pointee_name;
     bool pointee_struct = false;
+    bool is_slice = false;
+    TypeKind slice_element = TypeKind::Void;
+    std::string slice_element_name;
 };
 
 [[noreturn]] void unexpected(const Token& token, const std::string& what) {
@@ -180,6 +183,8 @@ private:
                 param.pointee = spec.pointee;
                 param.pointee_name = spec.pointee_name;
                 param.pointee_struct = spec.pointee_struct;
+                param.is_slice = spec.is_slice;
+                param.slice_element = spec.slice_element;
                 decl->params.push_back(std::move(param));
 
                 if (!match_op(",")) break;
@@ -390,6 +395,24 @@ private:
             expect_op("]");
         }
 
+        if (check_kw("срез")) {
+            advance();
+            spec.is_slice = true;
+            spec.kind = TypeKind::Slice;
+
+            const Token& element = peek();
+            if (element.kind == TokKind::Keyword && is_type_word(element.value)) {
+                spec.slice_element = *type_from_word(element.value);
+                spec.slice_element_name = element.value;
+                advance();
+            } else {
+                unexpected(element, "тип элемента среза");
+            }
+
+            spec.name = "срез " + spec.slice_element_name;
+            return spec;
+        }
+
         if (check_kw("указатель")) {
             advance();
             spec.is_pointer = true;
@@ -447,6 +470,8 @@ private:
         decl->pointee = spec.pointee;
         decl->pointee_name = spec.pointee_name;
         decl->pointee_struct = spec.pointee_struct;
+        decl->is_slice = spec.is_slice;
+        decl->slice_element = spec.slice_element;
 
         if (match_op("=")) {
             if (spec.is_array) {

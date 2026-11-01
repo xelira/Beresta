@@ -70,6 +70,9 @@ std::string param_text(const ParamInfo& param) {
     if (param.type == TypeKind::Struct) {
         return param.layout != nullptr ? param.layout->name : "уклад";
     }
+    if (param.type == TypeKind::Slice) {
+        return "срез " + std::string(type_name(param.element));
+    }
     if (param.type == TypeKind::Pointer) {
         if (param.pointee == TypeKind::Struct && param.pointee_layout != nullptr) {
             return "указатель " + param.pointee_layout->name;
@@ -332,7 +335,18 @@ private:
             }
 
             ParamInfo info;
-            if (param.is_pointer) {
+            if (param.is_slice) {
+                if (param.is_array) {
+                    fail("массив срезов в параметрах не поддерживается", param.line, param.col);
+                }
+                info.type = TK::Slice;
+                info.element = param.slice_element;
+                if (info.element == TK::Void || info.element == TK::Array ||
+                    info.element == TK::Struct || info.element == TK::Pointer) {
+                    fail("срез может смотреть только на простой тип", param.line, param.col,
+                         static_cast<int>(param.name.size()));
+                }
+            } else if (param.is_pointer) {
                 if (param.is_array) {
                     fail("массив указателей в параметрах не поддерживается", param.line,
                          param.col, static_cast<int>(param.name.size()));
@@ -435,7 +449,8 @@ private:
             symbol.pointee = info.pointee;
             symbol.pointee_layout = info.pointee_layout;
             symbol.layout = info.layout;
-            symbol.by_ref = info.type == TK::Array || info.type == TK::Struct;
+            symbol.by_ref = info.type == TK::Array || info.type == TK::Struct ||
+                            info.type == TK::Slice;
             symbol.kind = Symbol::Kind::Param;
             symbol.cname = fresh_cname("p");
             symbol.line = param.line;
@@ -525,6 +540,46 @@ private:
     }
 
     void check_var(VarDecl& decl) {
+        if (decl.is_slice) {
+            if (decl.is_array) {
+                fail("массив срезов пока не поддерживается", decl.line, decl.col,
+                     static_cast<int>(decl.name.size()));
+            }
+            if (decl.slice_element == TK::Void || decl.slice_element == TK::Array ||
+                decl.slice_element == TK::Struct || decl.slice_element == TK::Pointer) {
+                fail("срез может смотреть только на простой тип", decl.line, decl.col,
+                     static_cast<int>(decl.name.size()),
+                     "доступно: число, дробь, строка, флаг");
+            }
+
+            if (decl.value) {
+                const TK value_type = check_expr(*decl.value);
+                if (value_type != TK::Slice || decl.value->element != decl.slice_element) {
+                    fail("срез «" + decl.name + "» должен быть срезом " +
+                             std::string(type_name(decl.slice_element)),
+                         decl.value->line, decl.value->col, 1,
+                         "создайте его: нарезать(массив, от, до)");
+                }
+                auto* call = dynamic_cast<Call*>(decl.value.get());
+                if (call == nullptr || call->cname != "#slice_create") {
+                    fail("срез создаётся только через «нарезать»", decl.value->line,
+                         decl.value->col);
+                }
+            }
+
+            Symbol symbol;
+            symbol.name = decl.name;
+            symbol.type = TK::Slice;
+            symbol.element = decl.slice_element;
+            symbol.kind = Symbol::Kind::Var;
+            symbol.cname = fresh_cname("b");
+            symbol.line = decl.line;
+            symbol.col = decl.col;
+            decl.symbol = add(std::move(symbol));
+            scope_->define(decl.symbol);
+            return;
+        }
+
         if (decl.is_pointer) {
             if (decl.is_array) {
                 fail("массив указателей пока не поддерживается", decl.line, decl.col,
@@ -690,6 +745,18 @@ private:
                  "меняйте поля: " + stmt.name + ".поле = значение;");
         }
 
+        if (symbol->type == TK::Slice) {
+            const TK value_type = check_expr(*stmt.value);
+            auto* call = dynamic_cast<Call*>(stmt.value.get());
+            if (value_type != TK::Slice || stmt.value->element != symbol->element ||
+                call == nullptr || call->cname != "#slice_create") {
+                fail("срезу можно присвоить только новый срез: нарезать(массив, от, до)",
+                     stmt.value->line, stmt.value->col);
+            }
+            stmt.symbol = symbol;
+            return;
+        }
+
         if (symbol->type == TK::Pointer) {
             const TK value_type = check_expr(*stmt.value);
             if (value_type != TK::Pointer || stmt.value->pointee != symbol->pointee) {
@@ -732,6 +799,10 @@ private:
         if (value_type == TK::Pointer) {
             fail("указатель нельзя молвить", stmt.value->line, stmt.value->col, 1,
                  "напечатайте значение: по указатель");
+        }
+        if (value_type == TK::Slice) {
+            fail("срез нельзя молвить целиком", stmt.value->line, stmt.value->col, 1,
+                 "печатайте элементы по одному");
         }
     }
 
@@ -806,10 +877,10 @@ private:
                  static_cast<int>(stmt.array.size()),
                  "сначала объявите его: слово имя: [N]число;");
         }
-        if (source->type != TK::Array) {
-            fail("«" + stmt.array + "» — не массив", stmt.line, stmt.col,
+        if (source->type != TK::Array && source->type != TK::Slice) {
+            fail("«" + stmt.array + "» — не массив и не срез", stmt.line, stmt.col,
                  static_cast<int>(stmt.array.size()),
-                 "для каждого работает только с массивами");
+                 "для каждого работает с массивами и срезами");
         }
         stmt.source = source;
 
@@ -836,8 +907,8 @@ private:
             fail("неизвестный массив «" + expr.name + "»", expr.line, expr.col,
                  static_cast<int>(expr.name.size()));
         }
-        if (symbol->type != TK::Array) {
-            fail("«" + expr.name + "» — не массив, индексация невозможна", expr.line, expr.col,
+        if (symbol->type != TK::Array && symbol->type != TK::Slice) {
+            fail("«" + expr.name + "» — не массив и не срез", expr.line, expr.col,
                  static_cast<int>(expr.name.size()));
         }
 
@@ -859,8 +930,8 @@ private:
             fail("неизвестный массив «" + stmt.name + "»", stmt.line, stmt.col,
                  static_cast<int>(stmt.name.size()));
         }
-        if (symbol->type != TK::Array) {
-            fail("«" + stmt.name + "» — не массив", stmt.line, stmt.col,
+        if (symbol->type != TK::Array && symbol->type != TK::Slice) {
+            fail("«" + stmt.name + "» — не массив и не срез", stmt.line, stmt.col,
                  static_cast<int>(stmt.name.size()));
         }
 
@@ -1009,7 +1080,7 @@ private:
                  "например: " + expr.name + "(...)");
         }
         expr.symbol = symbol;
-        if (symbol->type == TK::Array) {
+        if (symbol->type == TK::Array || symbol->type == TK::Slice) {
             expr.element = symbol->element;
             expr.count = symbol->count;
         }
@@ -1111,7 +1182,8 @@ private:
             return record(expr, TK::Pointer);
         }
 
-        if (type == TK::Void || type == TK::Array || type == TK::Pointer) {
+        if (type == TK::Void || type == TK::Array || type == TK::Pointer ||
+            type == TK::Slice) {
             fail(std::string("нельзя взять адрес значения типа ") + type_name(type), expr.line,
                  expr.col);
         }
@@ -1199,6 +1271,40 @@ private:
     }
 
     TK check_call(Call& expr) {
+        if (expr.name == "нарезать" && scope_->lookup(expr.name) == nullptr) {
+            if (expr.args.size() != 3) {
+                fail("«нарезать» ждёт три аргумента: массив, начало, конец", expr.line, expr.col);
+            }
+
+            auto* ident = dynamic_cast<Ident*>(expr.args[0].get());
+            if (ident == nullptr) {
+                fail("первый аргумент «нарезать» — имя массива", expr.args[0]->line,
+                     expr.args[0]->col);
+            }
+            Symbol* array = scope_->lookup(ident->name);
+            if (array == nullptr) {
+                fail("неизвестный массив «" + ident->name + "»", expr.args[0]->line,
+                     expr.args[0]->col);
+            }
+            if (array->type != TK::Array) {
+                fail("«нарезать» работает только с массивом", expr.args[0]->line,
+                     expr.args[0]->col, 1, "срез из среза пока не поддерживается");
+            }
+
+            const TK from_type = check_expr(*expr.args[1]);
+            const TK to_type = check_expr(*expr.args[2]);
+            if (from_type != TK::Int || to_type != TK::Int) {
+                fail("границы среза должны быть числами", expr.line, expr.col);
+            }
+
+            expr.is_builtin = true;
+            expr.cname = "#slice_create";
+            expr.slice_source = array;
+            expr.slice_element = array->element;
+            expr.element = array->element;
+            return record(expr, TK::Slice);
+        }
+
         Symbol* symbol = scope_->lookup(expr.name);
         if (symbol == nullptr) {
             fail("функция «" + expr.name + "» не объявлена", expr.line, expr.col,
@@ -1218,6 +1324,13 @@ private:
             expr.cname = "#len";
             expr.is_builtin = true;
             expr.count = expr.args[0]->count;
+            return record(expr, TK::Int);
+        }
+
+        // длина среза известна только в рантайме
+        if (expr.name == "длина" && arg_types.size() == 1 && arg_types[0] == TK::Slice) {
+            expr.cname = "#slice_len";
+            expr.is_builtin = true;
             return record(expr, TK::Int);
         }
 
@@ -1279,6 +1392,8 @@ private:
                           arg.count == info.count;
             } else if (info.type == TK::Struct) {
                 matches = arg_types[i] == TK::Struct && arg.layout == info.layout;
+            } else if (info.type == TK::Slice) {
+                matches = arg_types[i] == TK::Slice && arg.element == info.element;
             } else if (info.type == TK::Pointer) {
                 matches = arg_types[i] == TK::Pointer && arg.pointee == info.pointee &&
                           (info.pointee != TK::Struct ||
@@ -1293,6 +1408,8 @@ private:
                     actual = "[" + std::to_string(arg.count) + "]" + type_name(arg.element);
                 } else if (arg_types[i] == TK::Struct && arg.layout != nullptr) {
                     actual = arg.layout->name;
+                } else if (arg_types[i] == TK::Slice) {
+                    actual = "срез " + std::string(type_name(arg.element));
                 } else if (arg_types[i] == TK::Pointer) {
                     if (arg.pointee == TK::Struct && arg.pointee_layout != nullptr) {
                         actual = "указатель " + arg.pointee_layout->name;
