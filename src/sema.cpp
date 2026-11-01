@@ -25,6 +25,8 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"в_число", {Overload{{TK::Float}, TK::Int, "#to_int"}}},
         {"в_дробь", {Overload{{TK::Int}, TK::Float, "#to_float"}}},
         {"мова", {Overload{{TK::String}, TK::String, "b_phrase"}}},
+        {"собрать", {Overload{{}, TK::Void, "b_gc_collect"}}},
+        {"память", {Overload{{}, TK::Int, "#live"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},

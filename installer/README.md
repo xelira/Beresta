@@ -76,6 +76,19 @@ wsl --install
 У Windows другие регистры (`rcx, rdx, r8, r9`), теневое пространство стека и
 PE-линковка. Это отдельный бэкенд, а не «флаг компилятора».
 
+## Релизы
+
+`.github/workflows/release.yml` на тег `v*` собирает:
+
+- `beresta-install-linux-amd64`
+- `beresta-install-linux-arm64`
+- `beresta-install-windows-amd64.exe`
+- `beresta-linux-amd64.tar.gz` (сам компилятор)
+- `SHA256SUMS.txt`
+
+и прикладывает всё к GitHub Release. Без тега те же файлы уходят в артефакты
+workflow.
+
 ## Что установщик не делает
 
 - Не собирает нативные Windows-бинарники на бересте.

@@ -56,6 +56,161 @@ b_panic:
     mov $1, %edi
     call exit@PLT
 
+    # --- сборка мусора -------------------------------------------------
+    # Консервативный mark-sweep: корни — слова на стеке, блоки — строки.
+    # Блок: [next:8][size|mark:8][данные...]
+
+    .p2align 4
+b_gc_alloc:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    mov %rdi, -8(%rbp)
+    mov %rdi, %rax
+    add $15, %rax
+    and $-8, %rax
+    mov %rax, -16(%rbp)
+    add $16, %rax
+    mov %rax, %rdi
+    call malloc@PLT
+    test %rax, %rax
+    jne .Lgc_alloc_ok
+    lea .Lmsg_oom(%rip), %rdi
+    call b_panic
+.Lgc_alloc_ok:
+    mov %rax, -24(%rbp)
+    mov b_gc_head(%rip), %rcx
+    mov %rcx, (%rax)
+    mov -16(%rbp), %rcx
+    mov %rcx, 8(%rax)
+    mov %rax, b_gc_head(%rip)
+    mov b_gc_bytes(%rip), %rcx
+    add -16(%rbp), %rcx
+    mov %rcx, b_gc_bytes(%rip)
+    cmp b_gc_limit(%rip), %rcx
+    jbe .Lgc_alloc_return
+    mov -24(%rbp), %rax
+    orq $1, 8(%rax)
+    call b_gc_collect
+.Lgc_alloc_return:
+    mov -24(%rbp), %rax
+    add $16, %rax
+    leave
+    ret
+
+    .p2align 4
+b_gc_mark:
+    test %rdi, %rdi
+    je .Lgc_mark_ret
+    mov b_gc_head(%rip), %rax
+.Lgc_mark_loop:
+    test %rax, %rax
+    je .Lgc_mark_ret
+    lea 16(%rax), %rcx
+    cmp %rcx, %rdi
+    jb .Lgc_mark_next
+    mov 8(%rax), %rdx
+    and $-8, %rdx
+    add %rcx, %rdx
+    cmp %rdx, %rdi
+    jae .Lgc_mark_next
+    orq $1, 8(%rax)
+    ret
+.Lgc_mark_next:
+    mov (%rax), %rax
+    jmp .Lgc_mark_loop
+.Lgc_mark_ret:
+    ret
+
+    .p2align 4
+b_gc_collect:
+    push %rbp
+    mov %rsp, %rbp
+    sub $64, %rsp
+    mov %rsp, %rax
+    add $7, %rax
+    and $-8, %rax
+    mov %rax, -8(%rbp)
+.Lgc_scan:
+    mov -8(%rbp), %rax
+    cmp b_stack_top(%rip), %rax
+    jae .Lgc_sweep
+    mov (%rax), %rdi
+    call b_gc_mark
+    addq $8, -8(%rbp)
+    jmp .Lgc_scan
+
+.Lgc_sweep:
+    movq $0, -16(%rbp)
+    lea b_gc_head(%rip), %rax
+    mov %rax, -24(%rbp)
+.Lgc_sweep_loop:
+    mov -24(%rbp), %rsi
+    mov (%rsi), %rax
+    test %rax, %rax
+    je .Lgc_sweep_done
+    mov 8(%rax), %rcx
+    test $1, %cl
+    jne .Lgc_keep
+    mov (%rax), %rdx
+    mov %rdx, (%rsi)
+    mov %rax, %rdi
+    call free@PLT
+    jmp .Lgc_sweep_loop
+.Lgc_keep:
+    andq $-8, %rcx
+    mov %rcx, 8(%rax)
+    add %rcx, -16(%rbp)
+    mov %rax, -24(%rbp)
+    jmp .Lgc_sweep_loop
+.Lgc_sweep_done:
+    movq $0, b_gc_bytes(%rip)
+    mov -16(%rbp), %rax
+    mov %rax, b_gc_live(%rip)
+    add %rax, %rax
+    cmp $1048576, %rax
+    jae .Lgc_limit_ok
+    mov $1048576, %rax
+.Lgc_limit_ok:
+    mov %rax, b_gc_limit(%rip)
+    leave
+    ret
+
+    .p2align 4
+b_gc_realloc:
+    test %rdi, %rdi
+    jne .Lgc_realloc_old
+    mov %rsi, %rdi
+    jmp b_gc_alloc
+.Lgc_realloc_old:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    mov %rdi, -8(%rbp)
+    mov %rsi, -16(%rbp)
+    lea -16(%rdi), %rax
+    mov 8(%rax), %rcx
+    and $-8, %rcx
+    cmp %rsi, %rcx
+    jae .Lgc_realloc_same
+    mov %rsi, %rdi
+    call b_gc_alloc
+    mov %rax, -24(%rbp)
+    mov -8(%rbp), %rsi
+    mov %rax, %rdi
+    mov -8(%rbp), %rax
+    lea -16(%rax), %rax
+    mov 8(%rax), %rdx
+    and $-8, %rdx
+    call memcpy@PLT
+    mov -24(%rbp), %rax
+    leave
+    ret
+.Lgc_realloc_same:
+    mov -8(%rbp), %rax
+    leave
+    ret
+
     .p2align 4
 b_div:
     push %rbp
@@ -125,7 +280,7 @@ b_str_concat:
     add -24(%rbp), %rax
     add $1, %rax
     mov %rax, %rdi
-    call malloc@PLT
+    call b_gc_alloc
     mov %rax, -32(%rbp)
     mov %rax, %rdi
     mov -8(%rbp), %rsi
@@ -144,7 +299,7 @@ b_str_from_int:
     sub $32, %rsp
     mov %rdi, -8(%rbp)
     mov $32, %edi
-    call malloc@PLT
+    call b_gc_alloc
     mov %rax, -16(%rbp)
     mov %rax, %rdi
     mov $32, %esi
@@ -163,7 +318,7 @@ b_str_from_float:
     sub $32, %rsp
     movsd %xmm0, -8(%rbp)
     mov $64, %edi
-    call malloc@PLT
+    call b_gc_alloc
     mov %rax, -16(%rbp)
     mov %rax, %rdi
     mov $64, %esi
@@ -222,7 +377,7 @@ b_read_line:
     movq $128, -8(%rbp)
     movq $0, -16(%rbp)
     mov $128, %edi
-    call malloc@PLT
+    call b_gc_alloc
     mov %rax, -24(%rbp)
 .Lb_read_loop:
     mov -16(%rbp), %rax
@@ -233,7 +388,7 @@ b_read_line:
     mov %rax, -8(%rbp)
     mov -24(%rbp), %rdi
     mov %rax, %rsi
-    call realloc@PLT
+    call b_gc_realloc
     mov %rax, -24(%rbp)
 .Lb_read_space:
     mov -24(%rbp), %rsi
@@ -284,7 +439,7 @@ b_read_file:
     call fseek@PLT
     mov -16(%rbp), %rdi
     add $1, %rdi
-    call malloc@PLT
+    call b_gc_alloc
     mov %rax, -24(%rbp)
     mov %rax, %rdi
     mov $1, %esi
@@ -333,6 +488,7 @@ class Codegen {
 public:
     std::string run(Program& program) {
         emit_runtime_rodata();
+        emit_gc_globals();
         emit_phrase_table();
         text_ << RUNTIME << "\n";
 
@@ -372,8 +528,18 @@ private:
                    ".Lmsg_div:\n    .string \"деление на ноль\"\n"
                    ".Lmsg_mod:\n    .string \"остаток от деления на ноль\"\n"
                    ".Lmsg_bounds:\n    .string \"выход за границы массива\"\n"
+                   ".Lmsg_oom:\n    .string \"не хватило памяти\"\n"
                    ".Lmode_r:\n    .string \"r\"\n"
                    ".Lmode_w:\n    .string \"w\"\n";
+    }
+
+    void emit_gc_globals() {
+        data_ << "    .p2align 3\n"
+                 "b_gc_head:\n    .quad 0\n"
+                 "b_gc_bytes:\n    .quad 0\n"
+                 "b_gc_limit:\n    .quad 1048576\n"
+                 "b_gc_live:\n    .quad 0\n"
+                 "b_stack_top:\n    .quad 0\n";
     }
 
     void emit_phrase_table() {
@@ -605,6 +771,7 @@ private:
         stack_depth_ = 0;
         loops_.clear();
         return_label_ = new_label("main_ret");
+        instruction("mov %rbp, b_stack_top(%rip)");
 
         emit_block_body(entry);
 
@@ -1302,6 +1469,10 @@ private:
             if (call_expr.cname == "#to_float") {
                 emit_expr_as_int(*call_expr.args.at(0));
                 instruction("cvtsi2sdq %rax, %xmm0");
+                return;
+            }
+            if (call_expr.cname == "#live") {
+                instruction("mov b_gc_live(%rip), %rax");
                 return;
             }
             if (call_expr.cname.empty()) {
