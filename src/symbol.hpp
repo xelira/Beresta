@@ -12,16 +12,22 @@ struct Overload {
     std::string cname;
 };
 
-//: Поле уклада. Только простые типы, вложенность пока не поддерживается.
+struct StructDef;
+
+//: Поле уклада. Может быть простого типа или другим укладом.
 struct Field {
     std::string name;
+    std::string type_name;  // как написано в исходнике
     TypeKind type = TypeKind::Void;
+    const StructDef* layout = nullptr;  // если поле — уклад
+    int offset = 0;                     // смещение в слотах
 };
 
-//: Описание уклада: имя и поля по порядку.
+//: Описание уклада: имя, поля по порядку и полный размер в слотах.
 struct StructDef {
     std::string name;
     std::vector<Field> fields;
+    int size_slots = 0;
 };
 
 //: Описание параметра функции. Массивы и уклады передаются по ссылке.

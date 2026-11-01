@@ -200,14 +200,32 @@ private:
         def->name = decl.name;
 
         std::unordered_set<std::string> seen;
-        for (const Field& field : decl.fields) {
-            if (field.type == TK::Void) {
-                fail("поле «" + field.name + "» не может быть типа ничто", decl.line, decl.col,
-                     1, "ничто — это отсутствие значения");
+        int offset = 0;
+        for (const Field& source : decl.fields) {
+            if (!seen.insert(source.name).second) {
+                fail("поле «" + source.name + "» повторяется в укладе «" + decl.name + "»",
+                     decl.line, decl.col, static_cast<int>(source.name.size()));
             }
-            if (!seen.insert(field.name).second) {
-                fail("поле «" + field.name + "» повторяется в укладе «" + decl.name + "»",
-                     decl.line, decl.col, static_cast<int>(field.name.size()));
+
+            Field field = source;
+            if (field.type == TK::Struct) {
+                const StructDef* nested = find_struct(field.type_name);
+                if (nested == nullptr) {
+                    fail("неизвестный уклад «" + field.type_name + "» в поле «" + field.name +
+                             "»",
+                         decl.line, decl.col, static_cast<int>(field.type_name.size()),
+                         "вложенный уклад должен быть объявлен выше");
+                }
+                field.layout = nested;
+                field.offset = offset;
+                offset += nested->size_slots;
+            } else {
+                if (field.type == TK::Void) {
+                    fail("поле «" + field.name + "» не может быть типа ничто", decl.line,
+                         decl.col, 1, "ничто — это отсутствие значения");
+                }
+                field.offset = offset;
+                offset += 1;
             }
             def->fields.push_back(field);
         }
@@ -216,6 +234,7 @@ private:
             fail("уклад «" + decl.name + "» пуст", decl.line, decl.col,
                  static_cast<int>(decl.name.size()), "добавьте хотя бы одно поле");
         }
+        def->size_slots = offset;
 
         StructDef* raw = def.get();
         program_.structs.push_back(std::move(def));
@@ -841,46 +860,21 @@ private:
     }
 
     void check_member_assign(MemberAssign& stmt) {
-        Symbol* symbol = scope_->lookup(stmt.base);
-        if (symbol == nullptr) {
-            fail("неизвестное имя «" + stmt.base + "»", stmt.line, stmt.col,
-                 static_cast<int>(stmt.base.size()));
-        }
-
-        const StructDef* def = nullptr;
-        if (symbol->type == TK::Struct) {
-            def = symbol->layout;
-        } else if (symbol->type == TK::Pointer && symbol->pointee == TK::Struct) {
-            def = symbol->pointee_layout;
-        }
-        if (def == nullptr) {
-            fail("«" + stmt.base + "» — не уклад, у него нет полей", stmt.line, stmt.col,
-                 static_cast<int>(stmt.base.size()));
-        }
-
-        const int index = field_index(def, stmt.field);
-        if (index < 0) {
-            fail("у уклада «" + stmt.base + "» нет поля «" + stmt.field + "»", stmt.line,
-                 stmt.col, static_cast<int>(stmt.field.size()), fields_hint(def));
+        const TK target_type = check_expr(*stmt.target);
+        if (target_type == TK::Struct) {
+            fail("уклад нельзя присвоить целиком", stmt.target->line, stmt.target->col, 1,
+                 "присваивайте поля по одному");
         }
 
         const TK value_type = check_expr(*stmt.value);
-        const TK field_type = def->fields[static_cast<size_t>(index)].type;
-        if (value_type == TK::Struct) {
-            fail("уклады нельзя присваивать целиком", stmt.value->line, stmt.value->col, 1,
-                 "присваивайте поля по одному");
-        }
-        if (!assignable(value_type, field_type)) {
-            fail("в поле «" + stmt.field + "» типа " + type_name(field_type) +
-                     " нельзя положить " + type_name(value_type),
+        if (!assignable(value_type, target_type)) {
+            fail(std::string("в поле типа ") + type_name(target_type) + " нельзя положить " +
+                     type_name(value_type),
                  stmt.value->line, stmt.value->col);
         }
-        if (field_type == TK::Float && value_type == TK::Int) {
+        if (target_type == TK::Float && value_type == TK::Int) {
             stmt.value->widen_to_float = true;
         }
-
-        stmt.symbol = symbol;
-        stmt.field_index = index;
     }
 
     static int field_index(const StructDef* def, const std::string& name) {
@@ -901,32 +895,30 @@ private:
     }
 
     TK check_member(Member& expr) {
-        Symbol* symbol = scope_->lookup(expr.base);
-        if (symbol == nullptr) {
-            fail("неизвестное имя «" + expr.base + "»", expr.line, expr.col,
-                 static_cast<int>(expr.base.size()));
-        }
+        const TK object_type = check_expr(*expr.object);
+
         const StructDef* def = nullptr;
-        if (symbol->type == TK::Struct) {
-            def = symbol->layout;
-        } else if (symbol->type == TK::Pointer && symbol->pointee == TK::Struct) {
-            def = symbol->pointee_layout;
+        if (object_type == TK::Struct) {
+            def = expr.object->layout;
+        } else if (object_type == TK::Pointer && expr.object->pointee == TK::Struct) {
+            def = expr.object->pointee_layout;
         }
         if (def == nullptr) {
-            fail("«" + expr.base + "» — не уклад, у него нет полей", expr.line, expr.col,
-                 static_cast<int>(expr.base.size()));
+            fail(std::string("у значения типа ") + type_name(object_type) + " нет полей",
+                 expr.line, expr.col);
         }
 
         const int index = field_index(def, expr.field);
         if (index < 0) {
-            fail("у уклада «" + expr.base + "» нет поля «" + expr.field + "»", expr.line,
+            fail("у уклада «" + def->name + "» нет поля «" + expr.field + "»", expr.line,
                  expr.col, static_cast<int>(expr.field.size()), fields_hint(def));
         }
 
-        expr.symbol = symbol;
-        expr.layout = def;
-        expr.member_index = index;
-        return record(expr, def->fields[static_cast<size_t>(index)].type);
+        const Field& field = def->fields[static_cast<std::size_t>(index)];
+        expr.base_layout = def;
+        expr.field_index = index;
+        expr.layout = field.layout;
+        return record(expr, field.type);
     }
 
     void check_return(Return& stmt) {
@@ -1087,13 +1079,11 @@ private:
         }
 
         if (type == TK::Struct) {
-            auto* ident = dynamic_cast<Ident*>(&operand);
-            if (ident == nullptr || ident->symbol == nullptr ||
-                ident->symbol->layout == nullptr) {
-                fail("адрес уклада берётся только у переменной", expr.line, expr.col);
+            if (operand.layout == nullptr) {
+                fail("адрес уклада берётся только у переменной или поля", expr.line, expr.col);
             }
             expr.pointee = TK::Struct;
-            expr.pointee_layout = ident->symbol->layout;
+            expr.pointee_layout = operand.layout;
             return record(expr, TK::Pointer);
         }
 

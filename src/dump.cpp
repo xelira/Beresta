@@ -37,7 +37,8 @@ void dump_expr(const Expr& expr, int depth, std::ostringstream& out) {
         out << pad << "Элемент " << node->name << "\n";
         dump_expr(*node->index, depth + 1, out);
     } else if (const auto* node = dynamic_cast<const Member*>(&expr)) {
-        out << pad << "Поле " << node->base << "." << node->field << "\n";
+        out << pad << "Поле " << node->field << "\n";
+        dump_expr(*node->object, depth + 1, out);
     } else {
         out << pad << "?\n";
     }
@@ -56,7 +57,8 @@ void dump_stmt(const Stmt& stmt, int depth, std::ostringstream& out) {
         dump_expr(*node->index, depth + 1, out);
         dump_expr(*node->value, depth + 1, out);
     } else if (const auto* node = dynamic_cast<const MemberAssign*>(&stmt)) {
-        out << pad << "Присвоить полю " << node->base << "." << node->field << "\n";
+        out << pad << "Присвоить полю\n";
+        dump_expr(*node->target, depth + 1, out);
         dump_expr(*node->value, depth + 1, out);
     } else if (const auto* node = dynamic_cast<const StructDecl*>(&stmt)) {
         out << pad << "Уклад " << node->name << "\n";

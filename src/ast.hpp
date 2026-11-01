@@ -88,13 +88,13 @@ struct Index : Expr {
     explicit Index(std::string n) : name(std::move(n)) {}
 };
 
-//: Поле уклада: точка.х
+//: Поле уклада: точка.х, допускаются цепочки точка.цвет.р
 struct Member : Expr {
-    std::string base;
+    ExprPtr object;
     std::string field;
-    Symbol* symbol = nullptr;
     int field_index = -1;
-    Member(std::string b, std::string f) : base(std::move(b)), field(std::move(f)) {}
+    const StructDef* base_layout = nullptr;
+    Member(ExprPtr obj, std::string f) : object(std::move(obj)), field(std::move(f)) {}
 };
 
 struct Stmt : Node {};
@@ -123,11 +123,8 @@ struct IndexAssign : Stmt {
 };
 
 struct MemberAssign : Stmt {
-    std::string base;
-    std::string field;
+    ExprPtr target;
     ExprPtr value;
-    Symbol* symbol = nullptr;
-    int field_index = -1;
 };
 
 struct DerefAssign : Stmt {

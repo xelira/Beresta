@@ -302,12 +302,11 @@ private:
                 return node;
             }
 
-            if (auto* member = dynamic_cast<Member*>(expr.get())) {
+            if (dynamic_cast<Member*>(expr.get()) != nullptr) {
                 auto node = std::make_unique<MemberAssign>();
-                node->line = member->line;
-                node->col = member->col;
-                node->base = member->base;
-                node->field = member->field;
+                node->line = expr->line;
+                node->col = expr->col;
+                node->target = std::move(expr);
                 node->value = parse_expr();
                 expect_op(";");
                 return node;
@@ -352,9 +351,19 @@ private:
             }
             const Token& field = expect_ident("имя поля");
             expect_op(":");
-            const Token& field_type = expect_type();
+            const TypeSpec spec = parse_type_spec();
+            if (spec.is_array || spec.is_pointer) {
+                fail("поля-массивы и поля-указатели пока не поддерживаются", field.line,
+                     field.col, static_cast<int>(field.value.size()),
+                     "поле может быть простым типом или другим укладом");
+            }
             expect_op(";");
-            decl->fields.push_back(Field{field.value, *type_from_word(field_type.value)});
+
+            Field info;
+            info.name = field.value;
+            info.type_name = spec.name;
+            info.type = spec.is_struct ? TypeKind::Struct : spec.kind;
+            decl->fields.push_back(std::move(info));
         }
         expect_op("}");
 
@@ -630,28 +639,31 @@ private:
                 expect_op(")");
                 return call;
             }
+            ExprPtr base;
             if (check_op("[")) {
                 advance();
-                auto node = std::make_unique<Index>(token.value);
-                node->line = token.line;
-                node->col = token.col;
-                node->index = parse_expr();
+                auto index = std::make_unique<Index>(token.value);
+                index->line = token.line;
+                index->col = token.col;
+                index->index = parse_expr();
                 expect_op("]");
-                return node;
+                base = std::move(index);
+            } else {
+                auto ident = std::make_unique<Ident>(token.value);
+                ident->line = token.line;
+                ident->col = token.col;
+                base = std::move(ident);
             }
-            if (check_op(".")) {
+
+            while (check_op(".")) {
                 advance();
                 const Token& field = expect_ident("имя поля");
-                auto node = std::make_unique<Member>(token.value, field.value);
-                node->line = token.line;
-                node->col = token.col;
-                node->field_index = -1;
-                return node;
+                auto member = std::make_unique<Member>(std::move(base), field.value);
+                member->line = field.line;
+                member->col = field.col;
+                base = std::move(member);
             }
-            auto ident = std::make_unique<Ident>(token.value);
-            ident->line = token.line;
-            ident->col = token.col;
-            return ident;
+            return base;
         }
 
         if (check_op("(")) {
