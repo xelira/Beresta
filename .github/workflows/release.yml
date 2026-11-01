@@ -39,6 +39,11 @@ jobs:
           make berestac-windows CROSS=x86_64-w64-mingw32-g++
           cp build/berestac.exe dist/berestac-windows-amd64.exe
 
+      - name: Проверить Windows-сеть
+        run: |
+          ./build/berestac build examples/сайт.бер --target windows -o /tmp/site.exe
+          file /tmp/site.exe
+
       - name: Собрать лаунчеры
         run: |
           cp build/berestac cli/berestac

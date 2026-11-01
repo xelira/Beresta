@@ -57,6 +57,7 @@ b_panic:
     # Блок: [next:8][size|mark:8][данные...]
 
     .p2align 4
+    .globl b_gc_alloc
 b_gc_alloc:
     push %rbp
     mov %rsp, %rbp

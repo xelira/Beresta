@@ -4,12 +4,13 @@
 //: линковка программы. ABI (Microsoft x64) обеспечивает C-компилятор, поэтому
 //: здесь нет ни одной ассемблерной строки.
 inline const char* WINDOWS_RUNTIME_C = R"C(
+#include <winsock2.h>
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
-#include <windows.h>
 
 typedef long long b_int;
 
@@ -245,5 +246,80 @@ char* b_phrase(const char* key) {
         }
     }
     return (char*)"";
+}
+
+/* --- сеть ------------------------------------------------------------ */
+
+static int b_net_ready = 0;
+
+static void b_net_init(void) {
+    if (!b_net_ready) {
+        WSADATA data;
+        WSAStartup(MAKEWORD(2, 2), &data);
+        b_net_ready = 1;
+    }
+}
+
+long long b_listen(long long port) {
+    b_net_init();
+    SOCKET listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener == INVALID_SOCKET) return -1;
+
+    BOOL yes = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons((u_short)port);
+
+    if (bind(listener, (struct sockaddr*)&address, sizeof(address)) == SOCKET_ERROR) {
+        closesocket(listener);
+        return -1;
+    }
+    if (listen(listener, 128) == SOCKET_ERROR) {
+        closesocket(listener);
+        return -1;
+    }
+    return (long long)listener;
+}
+
+long long b_accept(long long listener) {
+    SOCKET client = accept((SOCKET)listener, 0, 0);
+    if (client == INVALID_SOCKET) return -1;
+    return (long long)client;
+}
+
+char* b_read_socket(long long connection, long long limit) {
+    if (limit <= 0) limit = 4096;
+    char* buffer = (char*)b_gc_alloc((size_t)limit + 1);
+    int got = recv((SOCKET)connection, buffer, (int)limit, 0);
+    if (got < 0) got = 0;
+    buffer[got] = 0;
+    return buffer;
+}
+
+long long b_write_socket(long long connection, const char* text) {
+    size_t total = strlen(text);
+    size_t sent = 0;
+    while (sent < total) {
+        int part = send((SOCKET)connection, text + sent, (int)(total - sent), 0);
+        if (part <= 0) return -1;
+        sent += (size_t)part;
+    }
+    return (long long)sent;
+}
+
+long long b_close_socket(long long connection) {
+    return (long long)closesocket((SOCKET)connection);
+}
+
+long long b_contains(const char* text, const char* piece) {
+    return strstr(text, piece) != 0;
+}
+
+long long b_starts_with(const char* text, const char* prefix) {
+    return strncmp(text, prefix, strlen(prefix)) == 0;
 }
 )C";

@@ -28,6 +28,13 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"собрать", {Overload{{}, TK::Void, "b_gc_collect"}}},
         {"память", {Overload{{}, TK::Int, "#live"}}},
         {"жребий", {Overload{{TK::Int}, TK::Int, "b_random"}}},
+        {"слушать", {Overload{{TK::Int}, TK::Int, "b_listen"}}},
+        {"принять", {Overload{{TK::Int}, TK::Int, "b_accept"}}},
+        {"прочитать", {Overload{{TK::Int, TK::Int}, TK::String, "b_read_socket"}}},
+        {"ответить", {Overload{{TK::Int, TK::String}, TK::Int, "b_write_socket"}}},
+        {"закрыть", {Overload{{TK::Int}, TK::Void, "b_close_socket"}}},
+        {"содержит", {Overload{{TK::String, TK::String}, TK::Bool, "b_contains"}}},
+        {"начинается", {Overload{{TK::String, TK::String}, TK::Bool, "b_starts_with"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},

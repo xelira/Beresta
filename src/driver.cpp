@@ -17,6 +17,7 @@
 #include "diagnostic.hpp"
 #include "paths.hpp"
 #include "modules.hpp"
+#include "net_runtime.hpp"
 #include "target.hpp"
 
 namespace fs = std::filesystem;
@@ -174,6 +175,8 @@ std::string build(const std::string& input, const BuildOptions& options) {
     const fs::path temp_obj = temp_dir / "program.o";
     const fs::path temp_runtime = temp_dir / "runtime.c";
     const fs::path temp_runtime_obj = temp_dir / "runtime.o";
+    const fs::path temp_net = temp_dir / "net.c";
+    const fs::path temp_net_obj = temp_dir / "net.o";
 
     write_file(temp_asm.string(), assembly);
 
@@ -203,7 +206,17 @@ std::string build(const std::string& input, const BuildOptions& options) {
             fs::remove_all(temp_dir);
             fail("не удалось собрать рантайм для Windows");
         }
-        extra_object = " " + quote(temp_runtime_obj.string());
+        extra_object = " " + quote(temp_runtime_obj.string()) + " -lws2_32";
+    } else {
+        write_file(temp_net.string(), NET_RUNTIME_C);
+        const int net_status =
+            run_command(quote_program(linker) + " -O2 -c -o " + quote(temp_net_obj.string()) +
+                        " " + quote(temp_net.string()));
+        if (net_status != 0) {
+            fs::remove_all(temp_dir);
+            fail("не удалось собрать сетевой рантайм");
+        }
+        extra_object = " " + quote(temp_net_obj.string());
     }
 
     const int link_status = run_command(quote_program(linker) + " -o " + quote(output_path.string()) +

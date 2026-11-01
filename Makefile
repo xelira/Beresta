@@ -23,8 +23,8 @@ install: $(TARGET)
 	install -Dm755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/berestac
 
 # Прогоняет примеры. Это не тесты, это демонстрация.
-# «угадай.бер» интерактивный, поэтому в общий прогон не входит.
-EXAMPLES := $(filter-out examples/угадай.бер,$(wildcard examples/*.бер))
+# «угадай.бер» интерактивный, «сайт.бер» работает вечно — в общий прогон не входят.
+EXAMPLES := $(filter-out examples/угадай.бер examples/сайт.бер,$(wildcard examples/*.бер))
 
 examples: $(TARGET)
 	@for file in $(EXAMPLES); do \

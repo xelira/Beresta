@@ -143,6 +143,7 @@ rbp     │ старый rbp   │
 | `b_read_line` | `read(2)` побайтно в растущий буфер |
 | `b_read_file` | `fopen`/`fseek`/`ftell`/`fread`, файл целиком |
 | `b_write_file` | `fopen`/`fputs`/`fclose`, запись файла |
+| сетевой рантайм | отдельный `net.c`: `socket`/`bind`/`listen`/`accept`/`read`/`write` (Linux), Winsock (Windows) |
 | `b_gc_alloc` | выделение блока с заголовком и контролем порога |
 | `b_gc_realloc` | рост буфера без потери данных |
 | `b_gc_collect` | сканирование стека, пометка, зачистка |
