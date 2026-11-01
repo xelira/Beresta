@@ -1249,6 +1249,14 @@ private:
 
     void emit_address_of(Expr& expr) {
         if (auto* ident = dynamic_cast<Ident*>(&expr)) {
+            if (ident->symbol->type == TypeKind::Struct) {
+                if (ident->symbol->by_ref) {
+                    instruction("mov " + slot_ref(ident->symbol->slot) + ", %rax");
+                } else {
+                    instruction("lea " + struct_base(ident->symbol) + ", %rax");
+                }
+                return;
+            }
             instruction("lea " + slot_ref(ident->symbol->slot) + ", %rax");
             return;
         }
@@ -1262,6 +1270,14 @@ private:
         }
 
         if (auto* member = dynamic_cast<Member*>(&expr)) {
+            if (member->symbol->type == TypeKind::Pointer) {
+                instruction("mov " + slot_ref(member->symbol->slot) + ", %rax");
+                if (member->member_index != 0) {
+                    instruction("add $" + std::to_string(8 * member->member_index) + ", %rax");
+                }
+                return;
+            }
+
             if (member->symbol->by_ref) {
                 instruction("mov " + slot_ref(member->symbol->slot) + ", %rax");
                 if (member->member_index != 0) {
@@ -1296,6 +1312,8 @@ private:
     }
 
     void emit_binary(Binary& expr) {
+        if (fold_binary(expr)) return;
+
         const std::string& op = expr.op;
 
         if (op == "и" || op == "или") return emit_logic(expr);
@@ -1355,6 +1373,89 @@ private:
         }
 
         label(done);
+    }
+
+    //: Свёртка константных выражений: арифметика и сравнения литералов.
+    bool fold_binary(Binary& expr) {
+        auto* left_int = dynamic_cast<IntLit*>(expr.left.get());
+        auto* right_int = dynamic_cast<IntLit*>(expr.right.get());
+        auto* left_float = dynamic_cast<FloatLit*>(expr.left.get());
+        auto* right_float = dynamic_cast<FloatLit*>(expr.right.get());
+        const std::string& op = expr.op;
+
+        if (left_int != nullptr && right_int != nullptr &&
+            (expr.type == TypeKind::Int || expr.type == TypeKind::Bool)) {
+            const long long a = left_int->value;
+            const long long b = right_int->value;
+            long long value = 0;
+
+            if (op == "+") value = a + b;
+            else if (op == "-") value = a - b;
+            else if (op == "*") value = a * b;
+            else if (op == "/") {
+                if (b == 0) return false;
+                value = a / b;
+            } else if (op == "%") {
+                if (b == 0) return false;
+                value = a % b;
+            } else if (op == "==") value = a == b;
+            else if (op == "!=") value = a != b;
+            else if (op == "<") value = a < b;
+            else if (op == "<=") value = a <= b;
+            else if (op == ">") value = a > b;
+            else if (op == ">=") value = a >= b;
+            else if (op == "и") value = a && b;
+            else if (op == "или") value = a || b;
+            else return false;
+
+            instruction("mov $" + std::to_string(value) + ", %rax");
+            return true;
+        }
+
+        double a = 0;
+        double b = 0;
+        bool have_floats = false;
+
+        if (left_float != nullptr && right_int != nullptr) {
+            a = left_float->value;
+            b = static_cast<double>(right_int->value);
+            have_floats = true;
+        } else if (left_int != nullptr && right_float != nullptr) {
+            a = static_cast<double>(left_int->value);
+            b = right_float->value;
+            have_floats = true;
+        } else if (left_float != nullptr && right_float != nullptr) {
+            a = left_float->value;
+            b = right_float->value;
+            have_floats = true;
+        }
+
+        if (!have_floats) return false;
+
+        if (expr.type == TypeKind::Bool) {
+            bool value = false;
+            if (op == "==") value = a == b;
+            else if (op == "!=") value = a != b;
+            else if (op == "<") value = a < b;
+            else if (op == "<=") value = a <= b;
+            else if (op == ">") value = a > b;
+            else if (op == ">=") value = a >= b;
+            else return false;
+            instruction(std::string("mov $") + (value ? "1" : "0") + ", %eax");
+            return true;
+        }
+
+        if (expr.type != TypeKind::Float) return false;
+
+        double value = 0;
+        if (op == "+") value = a + b;
+        else if (op == "-") value = a - b;
+        else if (op == "*") value = a * b;
+        else if (op == "/") value = a / b;
+        else return false;
+
+        instruction("movsd " + intern_double(value) + "(%rip), %xmm0");
+        return true;
     }
 
     void emit_int_arith(Binary& expr) {
@@ -1469,6 +1570,17 @@ private:
     }
 
     void emit_member(Member& expr) {
+        if (expr.symbol->type == TypeKind::Pointer) {
+            instruction("mov " + slot_ref(expr.symbol->slot) + ", %rdx");
+            const std::string address = std::to_string(8 * expr.member_index) + "(%rdx)";
+            if (expr.type == TypeKind::Float) {
+                instruction("movsd " + address + ", %xmm0");
+            } else {
+                instruction("mov " + address + ", %rax");
+            }
+            return;
+        }
+
         if (expr.symbol->by_ref) {
             instruction("mov " + slot_ref(expr.symbol->slot) + ", %rdx");
             const std::string address =
@@ -1494,8 +1606,21 @@ private:
     void emit_member_assign(MemberAssign& stmt) {
         emit_expr(*stmt.value);
 
+        const StructDef* layout = stmt.symbol->layout != nullptr ? stmt.symbol->layout
+                                                                : stmt.symbol->pointee_layout;
         const TypeKind field_type =
-            stmt.symbol->layout->fields[static_cast<std::size_t>(stmt.field_index)].type;
+            layout->fields[static_cast<std::size_t>(stmt.field_index)].type;
+
+        if (stmt.symbol->type == TypeKind::Pointer) {
+            instruction("mov " + slot_ref(stmt.symbol->slot) + ", %rdx");
+            const std::string address = std::to_string(8 * stmt.field_index) + "(%rdx)";
+            if (field_type == TypeKind::Float) {
+                instruction("movsd %xmm0, " + address);
+            } else {
+                instruction("mov %rax, " + address);
+            }
+            return;
+        }
 
         if (stmt.symbol->by_ref) {
             instruction("mov " + slot_ref(stmt.symbol->slot) + ", %rdx");

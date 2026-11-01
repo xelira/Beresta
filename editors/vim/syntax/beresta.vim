@@ -6,7 +6,7 @@ if exists("b:current_syntax")
   finish
 endif
 
-syntax keyword berestaKeyword слово устой дело уклад береста ежели инако доколе повтор от до шаг для каждого из вернуть прервать продолжить молви указатель адрес по
+syntax keyword berestaKeyword слово устой дело уклад береста ежели инако доколе повтор от до шаг для каждого из вернуть прервать продолжить молви указатель адрес по привлечь
 syntax keyword berestaType число дробь строка флаг ничто
 syntax keyword berestaBoolean правда кривда
 syntax keyword berestaOperator и или не

@@ -15,14 +15,13 @@
 #include "driver.hpp"
 #include "dump.hpp"
 #include "lexer.hpp"
-#include "parser.hpp"
-#include "sema.hpp"
+#include "modules.hpp"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* VERSION = "0.2.0";
+constexpr const char* VERSION = "0.3.0";
 
 void usage() {
     std::cout <<
@@ -38,14 +37,6 @@ void usage() {
         "  berestac version\n\n"
         "пример:\n"
         "  berestac run examples/привет.бер\n";
-}
-
-std::string read_source(const std::string& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) fail("не удалось открыть файл «" + path + "»");
-    std::ostringstream buffer;
-    buffer << stream.rdbuf();
-    return buffer.str();
 }
 
 std::string take_option(const std::vector<std::string>& args, const std::string& name) {
@@ -109,32 +100,30 @@ int main(int argc, char** argv) {
     const std::string input = args[1];
 
     try {
-        const std::string source = read_source(input);
-
         if (command == "tokens") {
-            print_tokens(source);
+            const LoadedSource loaded = load_source(input);
+            try {
+                print_tokens(loaded.combined);
+            } catch (const BerestaError& error) {
+                throw BerestaError(remap(loaded, error.diagnostic()));
+            }
             return 0;
         }
 
-        if (command == "ast") {
-            Program program = parse(lex(source));
-            analyze(program);
-            std::cout << dump_ast(program);
-            return 0;
-        }
+        if (command == "ast" || command == "check" || command == "asm") {
+            Compilation compilation = compile_program(input);
 
-        if (command == "check") {
-            Program program = parse(lex(source));
-            analyze(program);
-            std::cout << "ок: " << input << "\n";
-            return 0;
-        }
+            if (command == "ast") {
+                std::cout << dump_ast(compilation.program);
+                return 0;
+            }
 
-        if (command == "asm") {
-            Program program = parse(lex(source));
-            analyze(program);
-            const std::string assembly = generate(program);
+            if (command == "check") {
+                std::cout << "ок: " << input << "\n";
+                return 0;
+            }
 
+            const std::string assembly = generate(compilation.program);
             const std::string output = take_option(args, "-o");
             if (output.empty()) {
                 std::cout << assembly;
@@ -175,7 +164,12 @@ int main(int argc, char** argv) {
         usage();
         return 2;
     } catch (const BerestaError& error) {
-        std::cerr << render_diagnostic(input, read_source(input), error.diagnostic());
+        const Diagnostic& diagnostic = error.diagnostic();
+        if (!diagnostic.filename.empty()) {
+            std::cerr << render_diagnostic(diagnostic.filename, diagnostic.source, diagnostic);
+        } else {
+            std::cerr << render_diagnostic(input, "", diagnostic);
+        }
         return 1;
     } catch (const std::exception& error) {
         std::cerr << "внутренняя ошибка: " << error.what() << "\n";

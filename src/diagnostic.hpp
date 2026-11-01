@@ -10,6 +10,9 @@ struct Diagnostic {
     int col = 0;
     int length = 1;
     bool has_position = false;
+    //: если ошибка пришла из модуля, здесь лежит его файл и исходник
+    std::string filename;
+    std::string source;
 };
 
 class BerestaError : public std::exception {

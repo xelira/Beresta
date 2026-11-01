@@ -12,22 +12,11 @@
 
 #include "codegen.hpp"
 #include "diagnostic.hpp"
-#include "lexer.hpp"
-#include "parser.hpp"
-#include "sema.hpp"
+#include "modules.hpp"
 
 namespace fs = std::filesystem;
 
 namespace {
-
-std::string read_file(const std::string& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) fail("не удалось открыть файл «" + path + "»");
-
-    std::ostringstream buffer;
-    buffer << stream.rdbuf();
-    return buffer.str();
-}
 
 void write_file(const std::string& path, const std::string& contents) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
@@ -67,10 +56,8 @@ fs::path make_temp_dir() {
 }
 
 std::string read_asm_source(const std::string& input) {
-    const std::string source = read_file(input);
-    Program program = parse(lex(source));
-    analyze(program);
-    return generate(program);
+    Compilation compilation = compile_program(input);
+    return generate(compilation.program);
 }
 
 }  // namespace

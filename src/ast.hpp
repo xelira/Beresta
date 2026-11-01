@@ -21,6 +21,7 @@ struct Expr : Node {
     int count = 0;
     //: для выражений-указателей
     TypeKind pointee = TypeKind::Void;
+    const StructDef* pointee_layout = nullptr;
     //: для выражений-укладов
     const StructDef* layout = nullptr;
     int member_index = -1;
