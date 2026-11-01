@@ -529,6 +529,7 @@ private:
                    ".Lmsg_mod:\n    .string \"остаток от деления на ноль\"\n"
                    ".Lmsg_bounds:\n    .string \"выход за границы массива\"\n"
                    ".Lmsg_oom:\n    .string \"не хватило памяти\"\n"
+                   ".Lmsg_null:\n    .string \"пустой указатель\"\n"
                    ".Lmode_r:\n    .string \"r\"\n"
                    ".Lmode_w:\n    .string \"w\"\n";
     }
@@ -820,6 +821,8 @@ private:
                 fail("устой-массив не поддерживается", decl.line, decl.col);
             case TypeKind::Struct:
                 fail("устой-уклад не поддерживается", decl.line, decl.col);
+            case TypeKind::Pointer:
+                fail("устой-указатель не поддерживается", decl.line, decl.col);
         }
     }
 
@@ -844,6 +847,7 @@ private:
         if (auto* node = dynamic_cast<ForEach*>(&stmt)) return emit_foreach(*node);
         if (auto* node = dynamic_cast<IndexAssign*>(&stmt)) return emit_index_assign(*node);
         if (auto* node = dynamic_cast<MemberAssign*>(&stmt)) return emit_member_assign(*node);
+        if (auto* node = dynamic_cast<DerefAssign*>(&stmt)) return emit_deref_assign(*node);
         if (auto* node = dynamic_cast<Return*>(&stmt)) {
             if (node->value) emit_expr(*node->value);
             instruction("jmp " + return_label_);
@@ -878,6 +882,7 @@ private:
                     break;
                 case TypeKind::Int:
                 case TypeKind::Bool:
+                case TypeKind::Pointer:
                     instruction("xor %eax, %eax");
                     break;
                 default:
@@ -1016,6 +1021,8 @@ private:
                 fail("массив нельзя молвить", stmt.line, stmt.col);
             case TypeKind::Struct:
                 fail("уклад нельзя молвить", stmt.line, stmt.col);
+            case TypeKind::Pointer:
+                fail("указатель нельзя молвить", stmt.line, stmt.col);
         }
     }
 
@@ -1194,6 +1201,22 @@ private:
     }
 
     void emit_unary(Unary& expr) {
+        if (expr.op == "адрес") {
+            emit_address_of(*expr.operand);
+            return;
+        }
+
+        if (expr.op == "по") {
+            emit_expr(*expr.operand);
+            emit_null_check();
+            if (expr.type == TypeKind::Float) {
+                instruction("movsd (%rax), %xmm0");
+            } else {
+                instruction("mov (%rax), %rax");
+            }
+            return;
+        }
+
         if (expr.op == "!" || expr.op == "не") {
             emit_expr(*expr.operand);
             instruction("test %rax, %rax");
@@ -1212,6 +1235,64 @@ private:
 
         emit_expr_as_int(*expr.operand);
         instruction("neg %rax");
+    }
+
+    //: Проверка указателя на ноль перед разыменованием.
+    void emit_null_check() {
+        const std::string ok = new_label("ptr_ok");
+        instruction("test %rax, %rax");
+        instruction("jne " + ok);
+        instruction("lea .Lmsg_null(%rip), %rdi");
+        call("b_panic");
+        label(ok);
+    }
+
+    void emit_address_of(Expr& expr) {
+        if (auto* ident = dynamic_cast<Ident*>(&expr)) {
+            instruction("lea " + slot_ref(ident->symbol->slot) + ", %rax");
+            return;
+        }
+
+        if (auto* index = dynamic_cast<Index*>(&expr)) {
+            emit_expr_as_int(*index->index);
+            emit_bounds(*index, index->count, "%rax");
+            load_array_base(index->symbol);
+            instruction("lea (%rdx,%rax,8), %rax");
+            return;
+        }
+
+        if (auto* member = dynamic_cast<Member*>(&expr)) {
+            if (member->symbol->by_ref) {
+                instruction("mov " + slot_ref(member->symbol->slot) + ", %rax");
+                if (member->member_index != 0) {
+                    instruction("add $" + std::to_string(8 * member->member_index) + ", %rax");
+                }
+            } else {
+                const int count = static_cast<int>(member->symbol->layout->fields.size());
+                instruction("lea " +
+                            std::to_string(-8 * (member->symbol->slot + count -
+                                                 member->member_index)) +
+                            "(%rbp), %rax");
+            }
+            return;
+        }
+
+        fail("адрес берётся только у переменной, элемента массива или поля уклада", expr.line,
+             expr.col);
+    }
+
+    void emit_deref_assign(DerefAssign& stmt) {
+        emit_expr(*stmt.pointer);
+        emit_null_check();
+        push_value(TypeKind::Int);
+        emit_expr(*stmt.value);
+        pop_value(TypeKind::Int);  // указатель в %rcx
+
+        if (stmt.value->type == TypeKind::Float) {
+            instruction("movsd %xmm0, (%rcx)");
+        } else {
+            instruction("mov %rax, (%rcx)");
+        }
     }
 
     void emit_binary(Binary& expr) {

@@ -24,6 +24,10 @@ struct TypeSpec {
     bool is_array = false;
     int count = 0;
     bool is_struct = false;
+    bool is_pointer = false;
+    TypeKind pointee = TypeKind::Void;
+    std::string pointee_name;
+    bool pointee_struct = false;
 };
 
 [[noreturn]] void unexpected(const Token& token, const std::string& what) {
@@ -172,6 +176,10 @@ private:
                 param.is_array = spec.is_array;
                 param.array_count = spec.count;
                 param.is_struct = spec.is_struct;
+                param.is_pointer = spec.is_pointer;
+                param.pointee = spec.pointee;
+                param.pointee_name = spec.pointee_name;
+                param.pointee_struct = spec.pointee_struct;
                 decl->params.push_back(std::move(param));
 
                 if (!match_op(",")) break;
@@ -305,7 +313,18 @@ private:
                 return node;
             }
 
-            fail("слева от «=» должна быть переменная, элемент массива или поле уклада",
+            if (auto* deref = dynamic_cast<Unary*>(expr.get());
+                deref != nullptr && deref->op == "по") {
+                auto node = std::make_unique<DerefAssign>();
+                node->line = deref->line;
+                node->col = deref->col;
+                node->pointer = std::move(deref->operand);
+                node->value = parse_expr();
+                expect_op(";");
+                return node;
+            }
+
+            fail("слева от «=» должна быть переменная, элемент массива, поле уклада или «по»",
                  expr->line, expr->col);
         }
 
@@ -362,6 +381,28 @@ private:
             expect_op("]");
         }
 
+        if (check_kw("указатель")) {
+            advance();
+            spec.is_pointer = true;
+            spec.kind = TypeKind::Pointer;
+
+            const Token& pointee = peek();
+            if (pointee.kind == TokKind::Keyword && is_type_word(pointee.value)) {
+                spec.pointee = *type_from_word(pointee.value);
+                spec.pointee_name = pointee.value;
+                advance();
+            } else if (pointee.kind == TokKind::Ident) {
+                spec.pointee_struct = true;
+                spec.pointee_name = pointee.value;
+                advance();
+            } else {
+                unexpected(pointee, "тип, на который указывает указатель");
+            }
+
+            spec.name = "указатель " + spec.pointee_name;
+            return spec;
+        }
+
         const Token& token = peek();
         if (token.kind == TokKind::Keyword && is_type_word(token.value)) {
             spec.kind = *type_from_word(token.value);
@@ -393,6 +434,10 @@ private:
         decl->is_array = spec.is_array;
         decl->array_count = spec.count;
         decl->is_struct = spec.is_struct;
+        decl->is_pointer = spec.is_pointer;
+        decl->pointee = spec.pointee;
+        decl->pointee_name = spec.pointee_name;
+        decl->pointee_struct = spec.pointee_struct;
 
         if (match_op("=")) {
             if (spec.is_array) {
@@ -522,8 +567,10 @@ private:
         const bool is_neg = token.kind == TokKind::Op && token.value == "-";
         const bool is_not = (token.kind == TokKind::Op && token.value == "!") ||
                             (token.kind == TokKind::Keyword && token.value == "не");
+        const bool is_address = token.kind == TokKind::Keyword && token.value == "адрес";
+        const bool is_deref = token.kind == TokKind::Keyword && token.value == "по";
 
-        if (is_neg || is_not) {
+        if (is_neg || is_not || is_address || is_deref) {
             const Token op = token;
             advance();
             auto node = std::make_unique<Unary>(op.value, parse_unary());

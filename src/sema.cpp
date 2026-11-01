@@ -45,6 +45,9 @@ std::string param_text(const ParamInfo& param) {
     if (param.type == TypeKind::Struct) {
         return param.layout != nullptr ? param.layout->name : "уклад";
     }
+    if (param.type == TypeKind::Pointer) {
+        return "указатель " + std::string(type_name(param.pointee));
+    }
     return type_name(param.type);
 }
 
@@ -282,7 +285,25 @@ private:
             }
 
             ParamInfo info;
-            if (param.is_struct) {
+            if (param.is_pointer) {
+                if (param.is_array) {
+                    fail("массив указателей в параметрах не поддерживается", param.line,
+                         param.col, static_cast<int>(param.name.size()));
+                }
+                if (param.pointee_struct) {
+                    fail("указатели на уклады пока не поддерживаются", param.line, param.col,
+                         static_cast<int>(param.name.size()));
+                }
+                info.type = TK::Pointer;
+                info.pointee = resolve_type(param.pointee_name, param.line, param.col);
+                if (info.pointee == TK::Void) {
+                    fail("указатель на ничто невозможен", param.line, param.col,
+                         static_cast<int>(param.name.size()));
+                }
+                if (info.pointee == TK::Pointer) {
+                    fail("указатель на указатель пока не поддерживается", param.line, param.col);
+                }
+            } else if (param.is_struct) {
                 if (param.is_array) {
                     fail("массив укладов в параметрах не поддерживается", param.line,
                          param.col, static_cast<int>(param.name.size()));
@@ -358,6 +379,7 @@ private:
             symbol.type = info.type;
             symbol.element = info.element;
             symbol.count = info.count;
+            symbol.pointee = info.pointee;
             symbol.layout = info.layout;
             symbol.by_ref = info.type == TK::Array || info.type == TK::Struct;
             symbol.kind = Symbol::Kind::Param;
@@ -429,6 +451,7 @@ private:
         if (auto* node = dynamic_cast<ForEach*>(&stmt)) return check_foreach(*node);
         if (auto* node = dynamic_cast<IndexAssign*>(&stmt)) return check_index_assign(*node);
         if (auto* node = dynamic_cast<MemberAssign*>(&stmt)) return check_member_assign(*node);
+        if (auto* node = dynamic_cast<DerefAssign*>(&stmt)) return check_deref_assign(*node);
         if (auto* node = dynamic_cast<Return*>(&stmt)) return check_return(*node);
         if (auto* node = dynamic_cast<Break*>(&stmt)) {
             if (loop_depth_ == 0) {
@@ -448,6 +471,46 @@ private:
     }
 
     void check_var(VarDecl& decl) {
+        if (decl.is_pointer) {
+            if (decl.is_array) {
+                fail("массив указателей пока не поддерживается", decl.line, decl.col,
+                     static_cast<int>(decl.name.size()));
+            }
+            if (decl.pointee_struct) {
+                fail("указатели на уклады пока не поддерживаются", decl.line, decl.col,
+                     static_cast<int>(decl.name.size()),
+                     "указатель может смотреть на число, дробь, строку или флаг");
+            }
+
+            const TK pointee = resolve_type(decl.pointee_name, decl.line, decl.col);
+            if (pointee == TK::Void || pointee == TK::Array || pointee == TK::Pointer) {
+                fail("нельзя сделать указатель на " + std::string(type_name(pointee)), decl.line,
+                     decl.col, static_cast<int>(decl.name.size()));
+            }
+
+            if (decl.value) {
+                const TK value_type = check_expr(*decl.value);
+                if (value_type != TK::Pointer || decl.value->pointee != pointee) {
+                    fail("указатель «" + decl.name + "» должен смотреть на " +
+                             type_name(pointee),
+                         decl.value->line, decl.value->col, 1,
+                         "возьмите адрес: адрес имя");
+                }
+            }
+
+            Symbol symbol;
+            symbol.name = decl.name;
+            symbol.type = TK::Pointer;
+            symbol.pointee = pointee;
+            symbol.kind = Symbol::Kind::Var;
+            symbol.cname = fresh_cname("b");
+            symbol.line = decl.line;
+            symbol.col = decl.col;
+            decl.symbol = add(std::move(symbol));
+            scope_->define(decl.symbol);
+            return;
+        }
+
         if (decl.is_struct) {
             if (decl.is_array) {
                 fail("массив укладов пока не поддерживается", decl.line, decl.col,
@@ -557,6 +620,18 @@ private:
                  "меняйте поля: " + stmt.name + ".поле = значение;");
         }
 
+        if (symbol->type == TK::Pointer) {
+            const TK value_type = check_expr(*stmt.value);
+            if (value_type != TK::Pointer || stmt.value->pointee != symbol->pointee) {
+                fail("в указатель «" + stmt.name + "» нельзя положить " +
+                         type_name(value_type),
+                     stmt.value->line, stmt.value->col, 1,
+                     std::string("нужен указатель на ") + type_name(symbol->pointee));
+            }
+            stmt.symbol = symbol;
+            return;
+        }
+
         const TK value_type = check_expr(*stmt.value);
         if (!assignable(value_type, symbol->type)) {
             fail("в «" + stmt.name + "» типа " + type_name(symbol->type) + " нельзя положить " +
@@ -580,6 +655,10 @@ private:
         if (value_type == TK::Struct) {
             fail("уклад нельзя молвить целиком", stmt.value->line, stmt.value->col, 1,
                  "напечатайте поля по одному");
+        }
+        if (value_type == TK::Pointer) {
+            fail("указатель нельзя молвить", stmt.value->line, stmt.value->col, 1,
+                 "напечатайте значение: по указатель");
         }
     }
 
@@ -870,11 +949,43 @@ private:
         if (symbol->type == TK::Struct) {
             expr.layout = symbol->layout;
         }
+        if (symbol->type == TK::Pointer) {
+            expr.pointee = symbol->pointee;
+        }
         return record(expr, symbol->type);
     }
 
+    void check_deref_assign(DerefAssign& stmt) {
+        const TK pointer_type = check_expr(*stmt.pointer);
+        if (pointer_type != TK::Pointer) {
+            fail(std::string("после «по» должен быть указатель, а тут ") +
+                     type_name(pointer_type),
+                 stmt.pointer->line, stmt.pointer->col);
+        }
+
+        const TK pointee = stmt.pointer->pointee;
+        const TK value_type = check_expr(*stmt.value);
+        if (!assignable(value_type, pointee)) {
+            fail(std::string("по указателю на ") + type_name(pointee) + " нельзя записать " +
+                     type_name(value_type),
+                 stmt.value->line, stmt.value->col, 1,
+                 std::string("нужно значение типа ") + type_name(pointee));
+        }
+    }
+
     TK check_unary(Unary& expr) {
+        if (expr.op == "адрес") return check_address(expr);
+
         const TK operand = check_expr(*expr.operand);
+
+        if (expr.op == "по") {
+            if (operand != TK::Pointer) {
+                fail(std::string("«по» требует указатель, а тут ") + type_name(operand),
+                     expr.line, expr.col);
+            }
+            expr.pointee = expr.operand->pointee;
+            return record(expr, expr.pointee);
+        }
 
         if (expr.op == "-") {
             if (!is_numeric(operand)) {
@@ -893,6 +1004,36 @@ private:
         }
 
         fail("неизвестный унарный оператор «" + expr.op + "»", expr.line, expr.col);
+    }
+
+    TK check_address(Unary& expr) {
+        Expr& operand = *expr.operand;
+        const TK type = check_expr(operand);
+
+        const bool lvalue = dynamic_cast<Ident*>(&operand) != nullptr ||
+                            dynamic_cast<Index*>(&operand) != nullptr ||
+                            dynamic_cast<Member*>(&operand) != nullptr;
+        if (!lvalue) {
+            fail("адрес берётся только у переменной, элемента массива или поля уклада",
+                 expr.line, expr.col);
+        }
+
+        if (auto* ident = dynamic_cast<Ident*>(&operand)) {
+            if (ident->symbol != nullptr && ident->symbol->kind == Symbol::Kind::Const) {
+                fail("у устоя нельзя взять адрес", expr.line, expr.col,
+                     static_cast<int>(ident->name.size()),
+                     "сделайте обычную переменную");
+            }
+        }
+
+        if (type == TK::Void || type == TK::Array || type == TK::Struct ||
+            type == TK::Pointer) {
+            fail(std::string("нельзя взять адрес значения типа ") + type_name(type), expr.line,
+                 expr.col);
+        }
+
+        expr.pointee = type;
+        return record(expr, TK::Pointer);
     }
 
     TK check_binary(Binary& expr) {
@@ -1048,6 +1189,8 @@ private:
                           arg.count == info.count;
             } else if (info.type == TK::Struct) {
                 matches = arg_types[i] == TK::Struct && arg.layout == info.layout;
+            } else if (info.type == TK::Pointer) {
+                matches = arg_types[i] == TK::Pointer && arg.pointee == info.pointee;
             } else {
                 matches = assignable(arg_types[i], info.type);
             }
@@ -1058,6 +1201,8 @@ private:
                     actual = "[" + std::to_string(arg.count) + "]" + type_name(arg.element);
                 } else if (arg_types[i] == TK::Struct && arg.layout != nullptr) {
                     actual = arg.layout->name;
+                } else if (arg_types[i] == TK::Pointer) {
+                    actual = "указатель " + std::string(type_name(arg.pointee));
                 }
 
                 fail("аргумент " + std::to_string(i + 1) + " для «" + expr.name +

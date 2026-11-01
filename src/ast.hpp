@@ -19,6 +19,8 @@ struct Expr : Node {
     //: для выражений-массивов
     TypeKind element = TypeKind::Void;
     int count = 0;
+    //: для выражений-указателей
+    TypeKind pointee = TypeKind::Void;
     //: для выражений-укладов
     const StructDef* layout = nullptr;
     int member_index = -1;
@@ -104,6 +106,10 @@ struct VarDecl : Stmt {
     bool is_array = false;
     int array_count = 0;
     bool is_struct = false;
+    bool is_pointer = false;
+    TypeKind pointee = TypeKind::Void;
+    std::string pointee_name;
+    bool pointee_struct = false;
 };
 
 struct IndexAssign : Stmt {
@@ -119,6 +125,11 @@ struct MemberAssign : Stmt {
     ExprPtr value;
     Symbol* symbol = nullptr;
     int field_index = -1;
+};
+
+struct DerefAssign : Stmt {
+    ExprPtr pointer;
+    ExprPtr value;
 };
 
 struct StructDecl : Stmt {
@@ -201,6 +212,10 @@ struct Param : Node {
     bool is_array = false;
     int array_count = 0;
     bool is_struct = false;
+    bool is_pointer = false;
+    TypeKind pointee = TypeKind::Void;
+    std::string pointee_name;
+    bool pointee_struct = false;
 };
 
 struct FuncDecl : Stmt {

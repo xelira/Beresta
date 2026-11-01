@@ -29,6 +29,7 @@ struct ParamInfo {
     TypeKind type = TypeKind::Void;
     TypeKind element = TypeKind::Void;  // для массива
     int count = 0;                      // для массива
+    TypeKind pointee = TypeKind::Void;  // для указателя
     const StructDef* layout = nullptr;  // для уклада
 };
 
@@ -49,6 +50,8 @@ struct Symbol {
     //: для массивов — тип элемента и длина
     TypeKind element = TypeKind::Void;
     int count = 0;
+    //: для указателя — на что он указывает
+    TypeKind pointee = TypeKind::Void;
     //: для уклада — его описание
     const StructDef* layout = nullptr;
     std::vector<ParamInfo> params;
