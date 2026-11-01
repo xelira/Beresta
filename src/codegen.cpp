@@ -1,0 +1,1186 @@
+#include "codegen.hpp"
+
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "diagnostic.hpp"
+#include "symbol.hpp"
+
+namespace {
+
+const char* INT_ARG_REGS[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+constexpr int MAX_INT_ARGS = 6;
+constexpr int MAX_FLOAT_ARGS = 8;
+
+std::string slot_ref(int slot) { return std::to_string(-8 * (slot + 1)) + "(%rbp)"; }
+
+std::string escape_asm(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() * 2);
+    for (unsigned char ch : text) {
+        if (ch == '"') {
+            out += "\\\"";
+        } else if (ch == '\\') {
+            out += "\\\\";
+        } else if (ch >= 0x20 && ch < 0x7F) {
+            out += static_cast<char>(ch);
+        } else {
+            char buffer[5];
+            std::snprintf(buffer, sizeof buffer, "\\%03o", ch);
+            out += buffer;
+        }
+    }
+    return out;
+}
+
+//: Рантайм. Всё честно на ассемблере, libc используется как ABI-слой.
+const char* RUNTIME = R"ASM(
+    .p2align 4
+b_panic:
+    push %rbp
+    mov %rsp, %rbp
+    sub $16, %rsp
+    mov %rdi, -8(%rbp)
+    xor %edi, %edi
+    call fflush@PLT
+    mov -8(%rbp), %rdx
+    lea .Lfmt_panic(%rip), %rsi
+    mov $2, %edi
+    xor %eax, %eax
+    call dprintf@PLT
+    mov $1, %edi
+    call exit@PLT
+
+    .p2align 4
+b_div:
+    push %rbp
+    mov %rsp, %rbp
+    test %rsi, %rsi
+    jne .Lb_div_ok
+    lea .Lmsg_div(%rip), %rdi
+    call b_panic
+.Lb_div_ok:
+    mov %rdi, %rax
+    cqto
+    idiv %rsi
+    leave
+    ret
+
+    .p2align 4
+b_mod:
+    push %rbp
+    mov %rsp, %rbp
+    test %rsi, %rsi
+    jne .Lb_mod_ok
+    lea .Lmsg_mod(%rip), %rdi
+    call b_panic
+.Lb_mod_ok:
+    mov %rdi, %rax
+    cqto
+    idiv %rsi
+    mov %rdx, %rax
+    leave
+    ret
+
+    .p2align 4
+b_str_len:
+    xor %eax, %eax
+.Lb_len_loop:
+    movzbl (%rdi), %ecx
+    test %cl, %cl
+    je .Lb_len_done
+    inc %rax
+.Lb_len_skip:
+    inc %rdi
+    movzbl (%rdi), %ecx
+    and $0xC0, %ecx
+    cmp $0x80, %ecx
+    je .Lb_len_skip
+    jmp .Lb_len_loop
+.Lb_len_done:
+    ret
+
+    .p2align 4
+b_str_to_int:
+    xor %esi, %esi
+    mov $10, %edx
+    jmp strtoll@PLT
+
+    .p2align 4
+b_str_concat:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    mov %rdi, -8(%rbp)
+    mov %rsi, -16(%rbp)
+    call strlen@PLT
+    mov %rax, -24(%rbp)
+    mov -16(%rbp), %rdi
+    call strlen@PLT
+    add -24(%rbp), %rax
+    add $1, %rax
+    mov %rax, %rdi
+    call malloc@PLT
+    mov %rax, -32(%rbp)
+    mov %rax, %rdi
+    mov -8(%rbp), %rsi
+    call strcpy@PLT
+    mov -32(%rbp), %rdi
+    mov -16(%rbp), %rsi
+    call strcat@PLT
+    mov -32(%rbp), %rax
+    leave
+    ret
+
+    .p2align 4
+b_str_from_int:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    mov %rdi, -8(%rbp)
+    mov $32, %edi
+    call malloc@PLT
+    mov %rax, -16(%rbp)
+    mov %rax, %rdi
+    mov $32, %esi
+    lea .Lfmt_int_num(%rip), %rdx
+    mov -8(%rbp), %rcx
+    xor %eax, %eax
+    call snprintf@PLT
+    mov -16(%rbp), %rax
+    leave
+    ret
+
+    .p2align 4
+b_str_from_float:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    movsd %xmm0, -8(%rbp)
+    mov $64, %edi
+    call malloc@PLT
+    mov %rax, -16(%rbp)
+    mov %rax, %rdi
+    mov $64, %esi
+    lea .Lfmt_float_num(%rip), %rdx
+    movsd -8(%rbp), %xmm0
+    mov $1, %eax
+    call snprintf@PLT
+    mov -16(%rbp), %rax
+    leave
+    ret
+
+    .p2align 4
+b_str_from_bool:
+    test %rdi, %rdi
+    je .Lb_bool_false
+    lea .Lstr_true(%rip), %rax
+    ret
+.Lb_bool_false:
+    lea .Lstr_false(%rip), %rax
+    ret
+
+    .p2align 4
+b_read_line:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    movq $128, -8(%rbp)
+    movq $0, -16(%rbp)
+    mov $128, %edi
+    call malloc@PLT
+    mov %rax, -24(%rbp)
+.Lb_read_loop:
+    mov -16(%rbp), %rax
+    cmp -8(%rbp), %rax
+    jl .Lb_read_space
+    mov -8(%rbp), %rax
+    add %rax, %rax
+    mov %rax, -8(%rbp)
+    mov -24(%rbp), %rdi
+    mov %rax, %rsi
+    call realloc@PLT
+    mov %rax, -24(%rbp)
+.Lb_read_space:
+    mov -24(%rbp), %rsi
+    add -16(%rbp), %rsi
+    xor %edi, %edi
+    mov $1, %edx
+    call read@PLT
+    cmp $1, %rax
+    jne .Lb_read_done
+    mov -24(%rbp), %rax
+    add -16(%rbp), %rax
+    cmpb $10, (%rax)
+    je .Lb_read_done
+    incq -16(%rbp)
+    jmp .Lb_read_loop
+.Lb_read_done:
+    mov -24(%rbp), %rax
+    add -16(%rbp), %rax
+    movb $0, (%rax)
+    mov -24(%rbp), %rax
+    leave
+    ret
+
+    .p2align 4
+b_read_file:
+    push %rbp
+    mov %rsp, %rbp
+    sub $48, %rsp
+    lea .Lmode_r(%rip), %rsi
+    call fopen@PLT
+    test %rax, %rax
+    je .Lb_rf_fail
+    mov %rax, -8(%rbp)
+    mov %rax, %rdi
+    xor %esi, %esi
+    mov $2, %edx
+    call fseek@PLT
+    mov -8(%rbp), %rdi
+    call ftell@PLT
+    mov %rax, -16(%rbp)
+    test %rax, %rax
+    jns .Lb_rf_size
+    movq $0, -16(%rbp)
+.Lb_rf_size:
+    mov -8(%rbp), %rdi
+    xor %esi, %esi
+    xor %edx, %edx
+    call fseek@PLT
+    mov -16(%rbp), %rdi
+    add $1, %rdi
+    call malloc@PLT
+    mov %rax, -24(%rbp)
+    mov %rax, %rdi
+    mov $1, %esi
+    mov -16(%rbp), %rdx
+    mov -8(%rbp), %rcx
+    call fread@PLT
+    mov -24(%rbp), %rax
+    add -16(%rbp), %rax
+    movb $0, (%rax)
+    mov -8(%rbp), %rdi
+    call fclose@PLT
+    mov -24(%rbp), %rax
+    leave
+    ret
+.Lb_rf_fail:
+    lea .Lstr_empty(%rip), %rax
+    leave
+    ret
+
+    .p2align 4
+b_write_file:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    mov %rsi, -8(%rbp)
+    lea .Lmode_w(%rip), %rsi
+    call fopen@PLT
+    test %rax, %rax
+    je .Lb_wf_fail
+    mov %rax, -16(%rbp)
+    mov -8(%rbp), %rdi
+    mov -16(%rbp), %rsi
+    call fputs@PLT
+    mov -16(%rbp), %rdi
+    call fclose@PLT
+    mov $1, %eax
+    leave
+    ret
+.Lb_wf_fail:
+    xor %eax, %eax
+    leave
+    ret
+)ASM";
+
+class Codegen {
+public:
+    std::string run(Program& program) {
+        emit_runtime_rodata();
+        text_ << RUNTIME << "\n";
+
+        for (auto& decl : program.decls) {
+            if (auto* constant = dynamic_cast<ConstDecl*>(decl.get())) {
+                emit_global_const(*constant);
+            }
+        }
+
+        for (auto& decl : program.decls) {
+            if (auto* func = dynamic_cast<FuncDecl*>(decl.get())) emit_function(*func);
+        }
+
+        auto* entry = dynamic_cast<Block*>(program.entry.get());
+        if (entry == nullptr) fail("повреждено дерево: береста — не блок");
+        emit_main(*entry);
+
+        std::ostringstream out;
+        out << text_.str();
+        out << "\n    .data\n" << data_.str();
+        out << "\n    .section .rodata\n" << rodata_.str();
+        out << "    .section .note.GNU-stack,\"\",@progbits\n";
+        return out.str();
+    }
+
+private:
+    void emit_runtime_rodata() {
+        rodata_ << "    .p2align 3\n"
+                   ".Lstr_empty:\n    .string \"\"\n"
+                   ".Lstr_true:\n    .string \"правда\"\n"
+                   ".Lstr_false:\n    .string \"кривда\"\n"
+                   ".Lfmt_int:\n    .string \"%ld\\n\"\n"
+                   ".Lfmt_float:\n    .string \"%.15g\\n\"\n"
+                   ".Lfmt_int_num:\n    .string \"%ld\"\n"
+                   ".Lfmt_float_num:\n    .string \"%.15g\"\n"
+                   ".Lfmt_panic:\n    .string \"береста: %s\\n\"\n"
+                   ".Lmsg_div:\n    .string \"деление на ноль\"\n"
+                   ".Lmsg_mod:\n    .string \"остаток от деления на ноль\"\n"
+                   ".Lmsg_bounds:\n    .string \"выход за границы массива\"\n"
+                   ".Lmode_r:\n    .string \"r\"\n"
+                   ".Lmode_w:\n    .string \"w\"\n";
+    }
+
+    // --- мелочи -------------------------------------------------------
+
+    void instruction(const std::string& text) { text_ << "    " << text << "\n"; }
+
+    void label(const std::string& name) { text_ << name << ":\n"; }
+
+    std::string new_label(const std::string& prefix) {
+        return ".L" + prefix + "_" + std::to_string(label_counter_++);
+    }
+
+    std::string intern_string(const std::string& value) {
+        const std::string name = ".Lstr_" + std::to_string(string_counter_++);
+        rodata_ << "    .p2align 3\n" << name << ":\n    .string \"" << escape_asm(value)
+                << "\"\n";
+        return name;
+    }
+
+    std::string intern_double(double value) {
+        const std::string name = ".Lnum_" + std::to_string(number_counter_++);
+        std::ostringstream text;
+        text << std::setprecision(17) << value;
+        rodata_ << "    .p2align 3\n" << name << ":\n    .double " << text.str() << "\n";
+        return name;
+    }
+
+    static std::string align16(int bytes) { return std::to_string((bytes + 15) / 16 * 16); }
+
+    std::string mem(const Symbol* symbol) {
+        if (symbol->global) return symbol->cname + "(%rip)";
+        return slot_ref(symbol->slot);
+    }
+
+    //: Адрес нулевого элемента массива. Элементы лежат подряд вверх по стеку.
+    static std::string array_base(const Symbol* symbol) {
+        return std::to_string(-8 * (symbol->slot + symbol->count)) + "(%rbp)";
+    }
+
+    // --- кадр вызова --------------------------------------------------
+
+    static int assign_slots(Stmt* stmt, int next) {
+        if (auto* node = dynamic_cast<VarDecl*>(stmt)) {
+            if (node->symbol) {
+                node->symbol->slot = next;
+                next += node->symbol->type == TypeKind::Array ? node->symbol->count : 1;
+            }
+            return next;
+        }
+        if (auto* node = dynamic_cast<Block*>(stmt)) {
+            for (auto& inner : node->body) next = assign_slots(inner.get(), next);
+            return next;
+        }
+        if (auto* node = dynamic_cast<If*>(stmt)) {
+            next = assign_slots(node->then_branch.get(), next);
+            if (node->otherwise) next = assign_slots(node->otherwise.get(), next);
+            return next;
+        }
+        if (auto* node = dynamic_cast<While*>(stmt)) {
+            return assign_slots(node->body.get(), next);
+        }
+        if (auto* node = dynamic_cast<For*>(stmt)) {
+            if (node->symbol) node->symbol->slot = next++;
+            node->slot_stop = next++;
+            node->slot_step = next++;
+            return assign_slots(node->body.get(), next);
+        }
+        if (auto* node = dynamic_cast<ForEach*>(stmt)) {
+            if (node->symbol) node->symbol->slot = next++;
+            node->counter_slot = next++;
+            return assign_slots(node->body.get(), next);
+        }
+        return next;
+    }
+
+    // --- вызовы -------------------------------------------------------
+
+    void call(const std::string& target) {
+        const bool pad = (stack_depth_ % 2) != 0;
+        if (pad) {
+            instruction("sub $8, %rsp");
+            ++stack_depth_;
+        }
+        instruction("call " + target);
+        if (pad) {
+            instruction("add $8, %rsp");
+            --stack_depth_;
+        }
+    }
+
+    void push_value(TypeKind type) {
+        if (type == TypeKind::Float) {
+            instruction("sub $8, %rsp");
+            instruction("movsd %xmm0, (%rsp)");
+        } else {
+            instruction("push %rax");
+        }
+        ++stack_depth_;
+    }
+
+    void pop_value(TypeKind type) {
+        if (type == TypeKind::Float) {
+            instruction("movsd (%rsp), %xmm1");
+            instruction("add $8, %rsp");
+        } else {
+            instruction("pop %rcx");
+        }
+        --stack_depth_;
+    }
+
+    // --- функции ------------------------------------------------------
+
+    void emit_function(FuncDecl& func) {
+        int next = 0;
+        for (Param& param : func.params) param.symbol->slot = next++;
+        next = assign_slots(func.body.get(), next);
+
+        const std::string frame = align16(next * 8);
+        const std::string& name = func.symbol->cname;
+
+        text_ << "    .p2align 4\n    .type " << name << ", @function\n";
+        label(name);
+        instruction("push %rbp");
+        instruction("mov %rsp, %rbp");
+        if (next > 0) instruction("sub $" + frame + ", %rsp");
+
+        int int_index = 0;
+        int float_index = 0;
+        for (Param& param : func.params) {
+            if (param.declared == TypeKind::Float) {
+                if (float_index >= MAX_FLOAT_ARGS) {
+                    fail("слишком много параметров-дробей", param.line, param.col);
+                }
+                instruction("movsd %xmm" + std::to_string(float_index++) + ", " +
+                            slot_ref(param.symbol->slot));
+            } else {
+                if (int_index >= MAX_INT_ARGS) {
+                    fail("слишком много параметров", param.line, param.col,
+                         static_cast<int>(param.name.size()),
+                         "в бересте максимум 6 обычных параметров");
+                }
+                instruction("mov " + std::string(INT_ARG_REGS[int_index++]) + ", " +
+                            slot_ref(param.symbol->slot));
+            }
+        }
+
+        stack_depth_ = 0;
+        loops_.clear();
+        return_label_ = new_label("ret");
+
+        emit_block_body(*dynamic_cast<Block*>(func.body.get()));
+
+        label(return_label_);
+        instruction("leave");
+        instruction("ret");
+        text_ << "    .size " << name << ", .-" << name << "\n\n";
+    }
+
+    void emit_main(Block& entry) {
+        int next = assign_slots(&entry, 0);
+        const std::string frame = align16(next * 8);
+
+        text_ << "    .p2align 4\n    .globl main\n    .type main, @function\n";
+        label("main");
+        instruction("push %rbp");
+        instruction("mov %rsp, %rbp");
+        if (next > 0) instruction("sub $" + frame + ", %rsp");
+
+        stack_depth_ = 0;
+        loops_.clear();
+        return_label_ = new_label("main_ret");
+
+        emit_block_body(entry);
+
+        label(return_label_);
+        instruction("mov $0, %eax");
+        instruction("leave");
+        instruction("ret");
+        text_ << "    .size main, .-main\n\n";
+    }
+
+    // --- данные -------------------------------------------------------
+
+    void emit_global_const(ConstDecl& decl) {
+        data_ << "    .p2align 3\n" << decl.symbol->cname << ":\n";
+
+        switch (decl.declared) {
+            case TypeKind::Int: {
+                const auto* literal = dynamic_cast<const IntLit*>(decl.value.get());
+                if (literal == nullptr) fail("устой должен быть литералом", decl.line, decl.col);
+                data_ << "    .quad " << literal->value << "\n";
+                break;
+            }
+            case TypeKind::Bool: {
+                const auto* literal = dynamic_cast<const BoolLit*>(decl.value.get());
+                if (literal == nullptr) fail("устой должен быть литералом", decl.line, decl.col);
+                data_ << "    .quad " << (literal->value ? 1 : 0) << "\n";
+                break;
+            }
+            case TypeKind::Float: {
+                const auto* literal = dynamic_cast<const FloatLit*>(decl.value.get());
+                if (literal == nullptr) fail("устой должен быть литералом", decl.line, decl.col);
+                std::uint64_t bits = 0;
+                std::memcpy(&bits, &literal->value, sizeof bits);
+                data_ << "    .quad " << bits << "\n";
+                break;
+            }
+            case TypeKind::String: {
+                const auto* literal = dynamic_cast<const StringLit*>(decl.value.get());
+                if (literal == nullptr) fail("устой должен быть литералом", decl.line, decl.col);
+                data_ << "    .quad " << intern_string(literal->value) << "\n";
+                break;
+            }
+            case TypeKind::Void:
+                fail("устой типа ничто", decl.line, decl.col);
+            case TypeKind::Array:
+                fail("устой-массив не поддерживается", decl.line, decl.col);
+        }
+    }
+
+    // --- операторы ----------------------------------------------------
+
+    void emit_block_body(const Block& block) {
+        for (const auto& stmt : block.body) emit_stmt(*stmt);
+    }
+
+    void emit_stmt(Stmt& stmt) {
+        if (auto* node = dynamic_cast<VarDecl*>(&stmt)) return emit_var(*node);
+        if (auto* node = dynamic_cast<Block*>(&stmt)) return emit_block_body(*node);
+        if (auto* node = dynamic_cast<Assign*>(&stmt)) return emit_assign(*node);
+        if (auto* node = dynamic_cast<Print*>(&stmt)) return emit_print(*node);
+        if (auto* node = dynamic_cast<ExprStmt*>(&stmt)) {
+            emit_expr(*node->value);
+            return;
+        }
+        if (auto* node = dynamic_cast<If*>(&stmt)) return emit_if(*node);
+        if (auto* node = dynamic_cast<While*>(&stmt)) return emit_while(*node);
+        if (auto* node = dynamic_cast<For*>(&stmt)) return emit_for(*node);
+        if (auto* node = dynamic_cast<ForEach*>(&stmt)) return emit_foreach(*node);
+        if (auto* node = dynamic_cast<IndexAssign*>(&stmt)) return emit_index_assign(*node);
+        if (auto* node = dynamic_cast<Return*>(&stmt)) {
+            if (node->value) emit_expr(*node->value);
+            instruction("jmp " + return_label_);
+            return;
+        }
+        if (auto* node = dynamic_cast<Break*>(&stmt)) {
+            if (loops_.empty()) fail("«прервать» вне цикла", node->line, node->col);
+            instruction("jmp " + loops_.back().break_label);
+            return;
+        }
+        if (auto* node = dynamic_cast<Continue*>(&stmt)) {
+            if (loops_.empty()) fail("«продолжить» вне цикла", node->line, node->col);
+            instruction("jmp " + loops_.back().continue_label);
+            return;
+        }
+        fail("неизвестный оператор", stmt.line, stmt.col);
+    }
+
+    void emit_var(VarDecl& decl) {
+        if (decl.symbol->type == TypeKind::Array) return emit_array_init(decl);
+
+        if (decl.value) {
+            emit_expr(*decl.value);
+        } else {
+            switch (decl.declared) {
+                case TypeKind::Float:
+                    instruction("xorpd %xmm0, %xmm0");
+                    break;
+                case TypeKind::String:
+                    instruction("lea .Lstr_empty(%rip), %rax");
+                    break;
+                case TypeKind::Int:
+                case TypeKind::Bool:
+                    instruction("xor %eax, %eax");
+                    break;
+                default:
+                    fail("переменная типа ничто", decl.line, decl.col);
+            }
+        }
+
+        if (decl.declared == TypeKind::Float) {
+            instruction("movsd %xmm0, " + mem(decl.symbol));
+        } else {
+            instruction("mov %rax, " + mem(decl.symbol));
+        }
+    }
+
+    void emit_array_init(VarDecl& decl) {
+        for (int i = 0; i < decl.symbol->count; ++i) {
+            const std::string slot =
+                std::to_string(-8 * (decl.symbol->slot + decl.symbol->count - i)) + "(%rbp)";
+            switch (decl.symbol->element) {
+                case TypeKind::String:
+                    instruction("lea .Lstr_empty(%rip), %rax");
+                    instruction("mov %rax, " + slot);
+                    break;
+                case TypeKind::Float:
+                    instruction("xorpd %xmm0, %xmm0");
+                    instruction("movsd %xmm0, " + slot);
+                    break;
+                default:
+                    instruction("movq $0, " + slot);
+                    break;
+            }
+        }
+    }
+
+    //: Проверка выхода за границы. Индекс лежит в reg.
+    void emit_bounds(const Node& node, int count, const std::string& reg) {
+        const std::string bad = new_label("bounds_bad");
+        const std::string ok = new_label("bounds_ok");
+
+        instruction("cmp $0, " + reg);
+        instruction("jl " + bad);
+        instruction("cmp $" + std::to_string(count) + ", " + reg);
+        instruction("jge " + bad);
+        instruction("jmp " + ok);
+
+        label(bad);
+        instruction("lea .Lmsg_bounds(%rip), %rdi");
+        call("b_panic");
+        label(ok);
+
+        (void)node;
+    }
+
+    void emit_index_assign(IndexAssign& stmt) {
+        emit_expr_as_int(*stmt.index);
+        push_value(TypeKind::Int);
+        emit_expr(*stmt.value);
+        pop_value(TypeKind::Int);  // индекс в %rcx
+
+        emit_bounds(stmt, stmt.symbol->count, "%rcx");
+        instruction("lea " + array_base(stmt.symbol) + ", %rdx");
+
+        if (stmt.symbol->element == TypeKind::Float) {
+            instruction("movsd %xmm0, (%rdx,%rcx,8)");
+        } else {
+            instruction("mov %rax, (%rdx,%rcx,8)");
+        }
+    }
+
+    void emit_assign(Assign& stmt) {
+        emit_expr(*stmt.value);
+        if (stmt.symbol->type == TypeKind::Float) {
+            instruction("movsd %xmm0, " + mem(stmt.symbol));
+        } else {
+            instruction("mov %rax, " + mem(stmt.symbol));
+        }
+    }
+
+    void emit_print(Print& stmt) {
+        emit_expr(*stmt.value);
+
+        switch (stmt.value->type) {
+            case TypeKind::String:
+                instruction("mov %rax, %rdi");
+                call("puts@PLT");
+                break;
+            case TypeKind::Int:
+                instruction("mov %rax, %rsi");
+                instruction("lea .Lfmt_int(%rip), %rdi");
+                instruction("xor %eax, %eax");
+                call("printf@PLT");
+                break;
+            case TypeKind::Float:
+                instruction("lea .Lfmt_float(%rip), %rdi");
+                instruction("mov $1, %eax");
+                call("printf@PLT");
+                break;
+            case TypeKind::Bool: {
+                const std::string is_false = new_label("print_false");
+                const std::string done = new_label("print_end");
+                instruction("test %rax, %rax");
+                instruction("je " + is_false);
+                instruction("lea .Lstr_true(%rip), %rdi");
+                call("puts@PLT");
+                instruction("jmp " + done);
+                label(is_false);
+                instruction("lea .Lstr_false(%rip), %rdi");
+                call("puts@PLT");
+                label(done);
+                break;
+            }
+            case TypeKind::Void:
+                fail("нечего молвить", stmt.line, stmt.col);
+            case TypeKind::Array:
+                fail("массив нельзя молвить", stmt.line, stmt.col);
+        }
+    }
+
+    void emit_if(If& stmt) {
+        const std::string otherwise = new_label("if_else");
+        const std::string done = new_label("if_end");
+
+        emit_expr(*stmt.cond);
+        instruction("test %rax, %rax");
+        instruction("je " + otherwise);
+
+        emit_stmt(*stmt.then_branch);
+        instruction("jmp " + done);
+
+        label(otherwise);
+        if (stmt.otherwise) emit_stmt(*stmt.otherwise);
+        label(done);
+    }
+
+    void emit_while(While& stmt) {
+        const std::string cond = new_label("while_cond");
+        const std::string done = new_label("while_end");
+
+        label(cond);
+        emit_expr(*stmt.cond);
+        instruction("test %rax, %rax");
+        instruction("je " + done);
+
+        loops_.push_back(LoopLabels{done, cond});
+        emit_stmt(*stmt.body);
+        loops_.pop_back();
+
+        instruction("jmp " + cond);
+        label(done);
+    }
+
+    void emit_for(For& stmt) {
+        const std::string cond = new_label("for_cond");
+        const std::string cond_negative = new_label("for_neg");
+        const std::string body = new_label("for_body");
+        const std::string step = new_label("for_step");
+        const std::string done = new_label("for_end");
+
+        emit_expr(*stmt.start);
+        instruction("mov %rax, " + slot_ref(stmt.symbol->slot));
+
+        emit_expr(*stmt.stop);
+        instruction("mov %rax, " + slot_ref(stmt.slot_stop));
+
+        if (stmt.step) {
+            emit_expr(*stmt.step);
+        } else {
+            instruction("mov $1, %eax");
+        }
+        instruction("mov %rax, " + slot_ref(stmt.slot_step));
+
+        label(cond);
+        instruction("mov " + slot_ref(stmt.slot_step) + ", %rcx");
+        instruction("test %rcx, %rcx");
+        instruction("js " + cond_negative);
+        instruction("mov " + slot_ref(stmt.symbol->slot) + ", %rax");
+        instruction("cmp " + slot_ref(stmt.slot_stop) + ", %rax");
+        instruction("jg " + done);
+        instruction("jmp " + body);
+
+        label(cond_negative);
+        instruction("mov " + slot_ref(stmt.symbol->slot) + ", %rax");
+        instruction("cmp " + slot_ref(stmt.slot_stop) + ", %rax");
+        instruction("jl " + done);
+
+        label(body);
+        loops_.push_back(LoopLabels{done, step});
+        emit_stmt(*stmt.body);
+        loops_.pop_back();
+
+        label(step);
+        instruction("mov " + slot_ref(stmt.symbol->slot) + ", %rax");
+        instruction("add " + slot_ref(stmt.slot_step) + ", %rax");
+        instruction("mov %rax, " + slot_ref(stmt.symbol->slot));
+        instruction("jmp " + cond);
+
+        label(done);
+    }
+
+    void emit_foreach(ForEach& stmt) {
+        const std::string cond = new_label("fe_cond");
+        const std::string step = new_label("fe_step");
+        const std::string done = new_label("fe_end");
+        const int count = stmt.source->count;
+
+        instruction("movq $0, " + slot_ref(stmt.counter_slot));
+
+        label(cond);
+        instruction("mov " + slot_ref(stmt.counter_slot) + ", %rax");
+        instruction("cmp $" + std::to_string(count) + ", %rax");
+        instruction("jge " + done);
+        instruction("lea " + array_base(stmt.source) + ", %rdx");
+
+        if (stmt.symbol->type == TypeKind::Float) {
+            instruction("movsd (%rdx,%rax,8), %xmm0");
+            instruction("movsd %xmm0, " + slot_ref(stmt.symbol->slot));
+        } else {
+            instruction("mov (%rdx,%rax,8), %rax");
+            instruction("mov %rax, " + slot_ref(stmt.symbol->slot));
+        }
+
+        loops_.push_back(LoopLabels{done, step});
+        emit_stmt(*stmt.body);
+        loops_.pop_back();
+
+        label(step);
+        instruction("incq " + slot_ref(stmt.counter_slot));
+        instruction("jmp " + cond);
+        label(done);
+    }
+
+    // --- выражения ----------------------------------------------------
+
+    void emit_expr(Expr& expr) {
+        if (auto* node = dynamic_cast<IntLit*>(&expr)) return emit_int(*node);
+        if (auto* node = dynamic_cast<FloatLit*>(&expr)) return emit_float_lit(*node);
+        if (auto* node = dynamic_cast<StringLit*>(&expr)) return emit_string(*node);
+        if (auto* node = dynamic_cast<BoolLit*>(&expr)) return emit_bool(*node);
+        if (auto* node = dynamic_cast<Ident*>(&expr)) return emit_ident(*node);
+        if (auto* node = dynamic_cast<Unary*>(&expr)) return emit_unary(*node);
+        if (auto* node = dynamic_cast<Binary*>(&expr)) return emit_binary(*node);
+        if (auto* node = dynamic_cast<Call*>(&expr)) return emit_call(*node);
+        if (auto* node = dynamic_cast<Index*>(&expr)) return emit_index(*node);
+        fail("неизвестное выражение", expr.line, expr.col);
+    }
+
+    void emit_int(IntLit& expr) {
+        if (expr.value >= -2147483648LL && expr.value <= 2147483647LL) {
+            instruction("mov $" + std::to_string(expr.value) + ", %rax");
+        } else {
+            instruction("movabsq $" + std::to_string(expr.value) + ", %rax");
+        }
+    }
+
+    void emit_float_lit(FloatLit& expr) {
+        instruction("movsd " + intern_double(expr.value) + "(%rip), %xmm0");
+    }
+
+    void emit_string(StringLit& expr) {
+        instruction("lea " + intern_string(expr.value) + "(%rip), %rax");
+    }
+
+    void emit_bool(BoolLit& expr) {
+        instruction(std::string("mov $") + (expr.value ? "1" : "0") + ", %eax");
+    }
+
+    void emit_ident(Ident& expr) {
+        const Symbol* symbol = expr.symbol;
+        if (symbol->type == TypeKind::Array) {
+            fail("массив нельзя использовать как значение", expr.line, expr.col);
+        }
+        if (symbol->type == TypeKind::Float) {
+            instruction("movsd " + mem(symbol) + ", %xmm0");
+        } else {
+            instruction("mov " + mem(symbol) + ", %rax");
+        }
+    }
+
+    void emit_expr_as_int(Expr& expr) {
+        emit_expr(expr);
+        if (expr.type == TypeKind::Float) instruction("cvttsd2si %xmm0, %rax");
+    }
+
+    void emit_expr_as_float(Expr& expr) {
+        emit_expr(expr);
+        if (expr.type == TypeKind::Int) instruction("cvtsi2sdq %rax, %xmm0");
+    }
+
+    void emit_unary(Unary& expr) {
+        if (expr.op == "!" || expr.op == "не") {
+            emit_expr(*expr.operand);
+            instruction("test %rax, %rax");
+            instruction("sete %al");
+            instruction("movzbl %al, %eax");
+            return;
+        }
+
+        if (expr.type == TypeKind::Float) {
+            emit_expr_as_float(*expr.operand);
+            instruction("movabsq $0x8000000000000000, %rax");
+            instruction("movq %rax, %xmm1");
+            instruction("xorpd %xmm1, %xmm0");
+            return;
+        }
+
+        emit_expr_as_int(*expr.operand);
+        instruction("neg %rax");
+    }
+
+    void emit_binary(Binary& expr) {
+        const std::string& op = expr.op;
+
+        if (op == "и" || op == "или") return emit_logic(expr);
+
+        if (op == "+" && expr.left->type == TypeKind::String) {
+            emit_expr(*expr.left);
+            push_value(TypeKind::String);
+            emit_expr(*expr.right);
+            pop_value(TypeKind::String);  // левая строка в %rcx, правая в %rax
+            instruction("mov %rcx, %rdi");
+            instruction("mov %rax, %rsi");
+            call("b_str_concat");
+            return;
+        }
+
+        if (expr.left->type == TypeKind::String) return emit_string_compare(expr);
+
+        if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") {
+            if (expr.left->type == TypeKind::Float || expr.right->type == TypeKind::Float) {
+                emit_float_compare(expr);
+            } else {
+                emit_int_compare(expr);
+            }
+            return;
+        }
+
+        if (expr.type == TypeKind::Float) return emit_float_arith(expr);
+        emit_int_arith(expr);
+    }
+
+    void emit_logic(Binary& expr) {
+        const std::string shortcut = new_label("logic_short");
+        const std::string done = new_label("logic_end");
+
+        if (expr.op == "и") {
+            emit_expr(*expr.left);
+            instruction("test %rax, %rax");
+            instruction("je " + shortcut);
+            emit_expr(*expr.right);
+            instruction("test %rax, %rax");
+            instruction("je " + shortcut);
+            instruction("mov $1, %eax");
+            instruction("jmp " + done);
+            label(shortcut);
+            instruction("xor %eax, %eax");
+        } else {
+            emit_expr(*expr.left);
+            instruction("test %rax, %rax");
+            instruction("jne " + shortcut);
+            emit_expr(*expr.right);
+            instruction("test %rax, %rax");
+            instruction("jne " + shortcut);
+            instruction("xor %eax, %eax");
+            instruction("jmp " + done);
+            label(shortcut);
+            instruction("mov $1, %eax");
+        }
+
+        label(done);
+    }
+
+    void emit_int_arith(Binary& expr) {
+        emit_expr_as_int(*expr.left);
+        push_value(TypeKind::Int);
+        emit_expr_as_int(*expr.right);
+        pop_value(TypeKind::Int);  // левый в %rcx, правый в %rax
+
+        const std::string& op = expr.op;
+        if (op == "+") {
+            instruction("add %rcx, %rax");
+        } else if (op == "-") {
+            instruction("sub %rax, %rcx");
+            instruction("mov %rcx, %rax");
+        } else if (op == "*") {
+            instruction("imul %rcx, %rax");
+        } else if (op == "/" || op == "%") {
+            instruction("mov %rcx, %rdi");
+            instruction("mov %rax, %rsi");
+            call(op == "/" ? "b_div" : "b_mod");
+        } else {
+            fail("неизвестная целочисленная операция «" + op + "»", expr.line, expr.col);
+        }
+    }
+
+    void emit_float_arith(Binary& expr) {
+        emit_expr_as_float(*expr.left);
+        push_value(TypeKind::Float);
+        emit_expr_as_float(*expr.right);
+        pop_value(TypeKind::Float);  // левый в %xmm1, правый в %xmm0
+
+        const std::string& op = expr.op;
+        if (op == "+") {
+            instruction("addsd %xmm1, %xmm0");
+        } else if (op == "*") {
+            instruction("mulsd %xmm1, %xmm0");
+        } else if (op == "-") {
+            instruction("subsd %xmm0, %xmm1");
+            instruction("movapd %xmm1, %xmm0");
+        } else if (op == "/") {
+            instruction("divsd %xmm0, %xmm1");
+            instruction("movapd %xmm1, %xmm0");
+        } else {
+            fail("неизвестная дробная операция «" + op + "»", expr.line, expr.col);
+        }
+    }
+
+    static const char* setcc_for(const std::string& op) {
+        if (op == "==") return "sete";
+        if (op == "!=") return "setne";
+        if (op == "<") return "setl";
+        if (op == "<=") return "setle";
+        if (op == ">") return "setg";
+        return "setge";
+    }
+
+    void emit_int_compare(Binary& expr) {
+        emit_expr_as_int(*expr.left);
+        push_value(TypeKind::Int);
+        emit_expr_as_int(*expr.right);
+        pop_value(TypeKind::Int);
+
+        instruction("cmp %rax, %rcx");
+        instruction(std::string(setcc_for(expr.op)) + " %al");
+        instruction("movzbl %al, %eax");
+    }
+
+    void emit_float_compare(Binary& expr) {
+        emit_expr_as_float(*expr.left);
+        push_value(TypeKind::Float);
+        emit_expr_as_float(*expr.right);
+        pop_value(TypeKind::Float);
+
+        instruction("comisd %xmm0, %xmm1");
+
+        const std::string& op = expr.op;
+        const char* cc = "sete";
+        if (op == ">") cc = "seta";
+        else if (op == ">=") cc = "setae";
+        else if (op == "<") cc = "setb";
+        else if (op == "<=") cc = "setbe";
+        else if (op == "!=") cc = "setne";
+
+        instruction(std::string(cc) + " %al");
+        instruction("movzbl %al, %eax");
+    }
+
+    void emit_string_compare(Binary& expr) {
+        emit_expr(*expr.left);
+        push_value(TypeKind::String);
+        emit_expr(*expr.right);
+        pop_value(TypeKind::String);
+
+        instruction("mov %rcx, %rdi");
+        instruction("mov %rax, %rsi");
+        call("strcmp@PLT");
+        instruction("cmp $0, %eax");
+        instruction(std::string(setcc_for(expr.op)) + " %al");
+        instruction("movzbl %al, %eax");
+    }
+
+    void emit_index(Index& expr) {
+        emit_expr_as_int(*expr.index);
+        emit_bounds(expr, expr.count, "%rax");
+        instruction("lea " + array_base(expr.symbol) + ", %rdx");
+
+        if (expr.element == TypeKind::Float) {
+            instruction("movsd (%rdx,%rax,8), %xmm0");
+        } else {
+            instruction("mov (%rdx,%rax,8), %rax");
+        }
+    }
+
+    void emit_call(Call& call_expr) {
+        if (call_expr.is_builtin) {
+            if (call_expr.cname == "#len") {
+                instruction("mov $" + std::to_string(call_expr.count) + ", %eax");
+                return;
+            }
+            if (call_expr.cname == "#to_int") {
+                emit_expr_as_float(*call_expr.args.at(0));
+                instruction("cvttsd2si %xmm0, %rax");
+                return;
+            }
+            if (call_expr.cname == "#to_float") {
+                emit_expr_as_int(*call_expr.args.at(0));
+                instruction("cvtsi2sdq %rax, %xmm0");
+                return;
+            }
+            if (call_expr.cname.empty()) {
+                // к_строке(строка) — тождество
+                emit_expr(*call_expr.args.at(0));
+                return;
+            }
+        }
+
+        const int base_depth = stack_depth_;
+        for (auto& arg : call_expr.args) {
+            emit_expr(*arg);
+            push_value(arg->type);
+        }
+
+        const int count = static_cast<int>(call_expr.args.size());
+        const int pad = (stack_depth_ % 2 != 0) ? 8 : 0;
+        if (pad) {
+            instruction("sub $8, %rsp");
+            ++stack_depth_;
+        }
+
+        int int_index = 0;
+        int float_index = 0;
+        for (int i = 0; i < count; ++i) {
+            const int offset = pad + (count - 1 - i) * 8;
+            const std::string address = std::to_string(offset) + "(%rsp)";
+            const TypeKind type = call_expr.args[static_cast<std::size_t>(i)]->type;
+
+            if (type == TypeKind::Float) {
+                if (float_index >= MAX_FLOAT_ARGS) {
+                    fail("слишком много аргументов-дробей", call_expr.line, call_expr.col);
+                }
+                instruction("movsd " + address + ", %xmm" + std::to_string(float_index++));
+            } else {
+                if (int_index >= MAX_INT_ARGS) {
+                    fail("слишком много аргументов", call_expr.line, call_expr.col, 1,
+                         "в бересте максимум 6 обычных аргументов");
+                }
+                instruction("mov " + address + ", " + INT_ARG_REGS[int_index++]);
+            }
+        }
+
+        instruction("call " + call_expr.cname);
+
+        const int cleanup = pad + count * 8;
+        if (cleanup > 0) {
+            instruction("add $" + std::to_string(cleanup) + ", %rsp");
+            stack_depth_ = base_depth;
+        }
+    }
+
+    struct LoopLabels {
+        std::string break_label;
+        std::string continue_label;
+    };
+
+    std::ostringstream text_;
+    std::ostringstream data_;
+    std::ostringstream rodata_;
+    std::vector<LoopLabels> loops_;
+    std::string return_label_;
+    int stack_depth_ = 0;
+    int label_counter_ = 0;
+    int string_counter_ = 0;
+    int number_counter_ = 0;
+};
+
+}  // namespace
+
+std::string generate(Program& program) { return Codegen().run(program); }
