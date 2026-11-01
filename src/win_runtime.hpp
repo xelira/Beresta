@@ -170,6 +170,8 @@ b_int b_str_to_int(const char* text) {
     return (b_int)strtoll(text, 0, 10);
 }
 
+b_int b_str_bytes(const char* text) { return (b_int)strlen(text); }
+
 b_int b_random(b_int bound) {
     static int seeded = 0;
     if (!seeded) {
