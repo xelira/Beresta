@@ -43,6 +43,8 @@ public:
                 program.decls.push_back(parse_const());
             } else if (token.kind == TokKind::Keyword && token.value == "дело") {
                 program.decls.push_back(parse_func());
+            } else if (token.kind == TokKind::Keyword && token.value == "уклад") {
+                program.decls.push_back(parse_struct());
             } else {
                 fail("ожидалось объявление, а встретилось " + token.describe(), token.line,
                      token.col, token.length,
@@ -266,22 +268,34 @@ private:
 
         auto expr = parse_expr();
 
-        // присваивание элементу массива: а[i] = выражение ;
+        // присваивание элементу массива или полю уклада: а[i] = ..., т.х = ...
         if (check_op("=")) {
-            auto* index = dynamic_cast<Index*>(expr.get());
-            if (index == nullptr) {
-                fail("слева от «=» должна быть переменная или элемент массива", expr->line,
-                     expr->col);
-            }
             advance();
-            auto node = std::make_unique<IndexAssign>();
-            node->line = index->line;
-            node->col = index->col;
-            node->name = index->name;
-            node->index = std::move(index->index);
-            node->value = parse_expr();
-            expect_op(";");
-            return node;
+
+            if (auto* index = dynamic_cast<Index*>(expr.get())) {
+                auto node = std::make_unique<IndexAssign>();
+                node->line = index->line;
+                node->col = index->col;
+                node->name = index->name;
+                node->index = std::move(index->index);
+                node->value = parse_expr();
+                expect_op(";");
+                return node;
+            }
+
+            if (auto* member = dynamic_cast<Member*>(expr.get())) {
+                auto node = std::make_unique<MemberAssign>();
+                node->line = member->line;
+                node->col = member->col;
+                node->base = member->base;
+                node->field = member->field;
+                node->value = parse_expr();
+                expect_op(";");
+                return node;
+            }
+
+            fail("слева от «=» должна быть переменная, элемент массива или поле уклада",
+                 expr->line, expr->col);
         }
 
         auto node = std::make_unique<ExprStmt>();
@@ -290,6 +304,31 @@ private:
         node->value = std::move(expr);
         expect_op(";");
         return node;
+    }
+
+    StmtPtr parse_struct() {
+        const Token& keyword = expect_kw("уклад");
+        const Token& name = expect_ident("имя уклада");
+        expect_op("{");
+
+        auto decl = std::make_unique<StructDecl>();
+        decl->line = keyword.line;
+        decl->col = keyword.col;
+        decl->name = name.value;
+
+        while (!check_op("}")) {
+            if (check(TokKind::Eof)) {
+                fail("незакрытый уклад", keyword.line, keyword.col, 1, "поставьте «}»");
+            }
+            const Token& field = expect_ident("имя поля");
+            expect_op(":");
+            const Token& field_type = expect_type();
+            expect_op(";");
+            decl->fields.push_back(Field{field.value, *type_from_word(field_type.value)});
+        }
+        expect_op("}");
+
+        return decl;
     }
 
     StmtPtr parse_var() {
@@ -316,16 +355,29 @@ private:
             is_array = true;
         }
 
-        const Token& type_token = expect_type();
+        const Token& type_token = peek();
+        bool is_struct = false;
+        TypeKind declared = TypeKind::Void;
+
+        if (type_token.kind == TokKind::Keyword && is_type_word(type_token.value)) {
+            declared = *type_from_word(type_token.value);
+            advance();
+        } else if (type_token.kind == TokKind::Ident) {
+            is_struct = true;
+            advance();
+        } else {
+            unexpected(type_token, "тип");
+        }
 
         auto decl = std::make_unique<VarDecl>();
         decl->line = keyword.line;
         decl->col = keyword.col;
         decl->name = name.value;
         decl->type_name = type_token.value;
-        decl->declared = *type_from_word(type_token.value);
+        decl->declared = declared;
         decl->is_array = is_array;
         decl->array_count = array_count;
+        decl->is_struct = is_struct;
 
         if (match_op("=")) {
             if (is_array) {
@@ -523,6 +575,15 @@ private:
                 node->col = token.col;
                 node->index = parse_expr();
                 expect_op("]");
+                return node;
+            }
+            if (check_op(".")) {
+                advance();
+                const Token& field = expect_ident("имя поля");
+                auto node = std::make_unique<Member>(token.value, field.value);
+                node->line = token.line;
+                node->col = token.col;
+                node->field_index = -1;
                 return node;
             }
             auto ident = std::make_unique<Ident>(token.value);

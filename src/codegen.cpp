@@ -186,6 +186,35 @@ b_str_from_bool:
     ret
 
     .p2align 4
+b_phrase:
+    push %rbp
+    mov %rsp, %rbp
+    sub $32, %rsp
+    mov %rdi, -8(%rbp)
+    lea .Lphrases(%rip), %rax
+    mov %rax, -16(%rbp)
+.Lb_ph_loop:
+    mov -16(%rbp), %rax
+    mov (%rax), %rdi
+    test %rdi, %rdi
+    je .Lb_ph_none
+    mov -8(%rbp), %rsi
+    call strcmp@PLT
+    test %eax, %eax
+    je .Lb_ph_found
+    addq $16, -16(%rbp)
+    jmp .Lb_ph_loop
+.Lb_ph_found:
+    mov -16(%rbp), %rax
+    mov 8(%rax), %rax
+    leave
+    ret
+.Lb_ph_none:
+    lea .Lstr_empty(%rip), %rax
+    leave
+    ret
+
+    .p2align 4
 b_read_line:
     push %rbp
     mov %rsp, %rbp
@@ -304,6 +333,7 @@ class Codegen {
 public:
     std::string run(Program& program) {
         emit_runtime_rodata();
+        emit_phrase_table();
         text_ << RUNTIME << "\n";
 
         for (auto& decl : program.decls) {
@@ -344,6 +374,35 @@ private:
                    ".Lmsg_bounds:\n    .string \"выход за границы массива\"\n"
                    ".Lmode_r:\n    .string \"r\"\n"
                    ".Lmode_w:\n    .string \"w\"\n";
+    }
+
+    void emit_phrase_table() {
+        struct Pair {
+            const char* key;
+            const char* phrase;
+        };
+        static const Pair table[] = {
+            {"привет", "Здравствуй, путник."},
+            {"прощание", "Ступай с миром."},
+            {"спасибо", "Благодарствую."},
+            {"пожалуйста", "На здоровье."},
+            {"да", "Так."},
+            {"нет", "Никак нет."},
+            {"береста", "Береста шелестит."},
+            {"тишина", "В лесу тихо."},
+            {"ошибка", "Что-то пошло не так."},
+            {"дорога", "Дорога зовёт."},
+            {"утро", "Утро доброе."},
+            {"вечер", "Вечер тихий."},
+        };
+
+        data_ << "    .p2align 3\n.Lphrases:\n";
+        for (const Pair& pair : table) {
+            const std::string key = intern_string(pair.key);
+            const std::string phrase = intern_string(pair.phrase);
+            data_ << "    .quad " << key << "\n    .quad " << phrase << "\n";
+        }
+        data_ << "    .quad 0\n    .quad 0\n";
     }
 
     // --- мелочи -------------------------------------------------------
@@ -389,7 +448,13 @@ private:
         if (auto* node = dynamic_cast<VarDecl*>(stmt)) {
             if (node->symbol) {
                 node->symbol->slot = next;
-                next += node->symbol->type == TypeKind::Array ? node->symbol->count : 1;
+                if (node->symbol->type == TypeKind::Array) {
+                    next += node->symbol->count;
+                } else if (node->symbol->type == TypeKind::Struct) {
+                    next += static_cast<int>(node->symbol->layout->fields.size());
+                } else {
+                    next += 1;
+                }
             }
             return next;
         }
@@ -561,6 +626,8 @@ private:
                 fail("устой типа ничто", decl.line, decl.col);
             case TypeKind::Array:
                 fail("устой-массив не поддерживается", decl.line, decl.col);
+            case TypeKind::Struct:
+                fail("устой-уклад не поддерживается", decl.line, decl.col);
         }
     }
 
@@ -584,6 +651,7 @@ private:
         if (auto* node = dynamic_cast<For*>(&stmt)) return emit_for(*node);
         if (auto* node = dynamic_cast<ForEach*>(&stmt)) return emit_foreach(*node);
         if (auto* node = dynamic_cast<IndexAssign*>(&stmt)) return emit_index_assign(*node);
+        if (auto* node = dynamic_cast<MemberAssign*>(&stmt)) return emit_member_assign(*node);
         if (auto* node = dynamic_cast<Return*>(&stmt)) {
             if (node->value) emit_expr(*node->value);
             instruction("jmp " + return_label_);
@@ -603,6 +671,7 @@ private:
     }
 
     void emit_var(VarDecl& decl) {
+        if (decl.symbol->type == TypeKind::Struct) return emit_struct_init(decl);
         if (decl.symbol->type == TypeKind::Array) return emit_array_init(decl);
 
         if (decl.value) {
@@ -628,6 +697,26 @@ private:
             instruction("movsd %xmm0, " + mem(decl.symbol));
         } else {
             instruction("mov %rax, " + mem(decl.symbol));
+        }
+    }
+
+    void emit_struct_init(VarDecl& decl) {
+        for (std::size_t i = 0; i < decl.symbol->layout->fields.size(); ++i) {
+            const std::string slot =
+                std::to_string(-8 * (decl.symbol->slot + 1 + static_cast<int>(i))) + "(%rbp)";
+            switch (decl.symbol->layout->fields[i].type) {
+                case TypeKind::String:
+                    instruction("lea .Lstr_empty(%rip), %rax");
+                    instruction("mov %rax, " + slot);
+                    break;
+                case TypeKind::Float:
+                    instruction("xorpd %xmm0, %xmm0");
+                    instruction("movsd %xmm0, " + slot);
+                    break;
+                default:
+                    instruction("movq $0, " + slot);
+                    break;
+            }
         }
     }
 
@@ -732,6 +821,8 @@ private:
                 fail("нечего молвить", stmt.line, stmt.col);
             case TypeKind::Array:
                 fail("массив нельзя молвить", stmt.line, stmt.col);
+            case TypeKind::Struct:
+                fail("уклад нельзя молвить", stmt.line, stmt.col);
         }
     }
 
@@ -860,6 +951,7 @@ private:
         if (auto* node = dynamic_cast<Binary*>(&expr)) return emit_binary(*node);
         if (auto* node = dynamic_cast<Call*>(&expr)) return emit_call(*node);
         if (auto* node = dynamic_cast<Index*>(&expr)) return emit_index(*node);
+        if (auto* node = dynamic_cast<Member*>(&expr)) return emit_member(*node);
         fail("неизвестное выражение", expr.line, expr.col);
     }
 
@@ -887,6 +979,9 @@ private:
         const Symbol* symbol = expr.symbol;
         if (symbol->type == TypeKind::Array) {
             fail("массив нельзя использовать как значение", expr.line, expr.col);
+        }
+        if (symbol->type == TypeKind::Struct) {
+            fail("уклад нельзя использовать как значение", expr.line, expr.col);
         }
         if (symbol->type == TypeKind::Float) {
             instruction("movsd " + mem(symbol) + ", %xmm0");
@@ -1096,6 +1191,30 @@ private:
             instruction("movsd (%rdx,%rax,8), %xmm0");
         } else {
             instruction("mov (%rdx,%rax,8), %rax");
+        }
+    }
+
+    void emit_member(Member& expr) {
+        const std::string slot =
+            std::to_string(-8 * (expr.symbol->slot + 1 + expr.member_index)) + "(%rbp)";
+        if (expr.type == TypeKind::Float) {
+            instruction("movsd " + slot + ", %xmm0");
+        } else {
+            instruction("mov " + slot + ", %rax");
+        }
+    }
+
+    void emit_member_assign(MemberAssign& stmt) {
+        emit_expr(*stmt.value);
+        const std::string slot =
+            std::to_string(-8 * (stmt.symbol->slot + 1 + stmt.field_index)) + "(%rbp)";
+        const TypeKind field_type =
+            stmt.symbol->layout->fields[static_cast<std::size_t>(stmt.field_index)].type;
+
+        if (field_type == TypeKind::Float) {
+            instruction("movsd %xmm0, " + slot);
+        } else {
+            instruction("mov %rax, " + slot);
         }
     }
 

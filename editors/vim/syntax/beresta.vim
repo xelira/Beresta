@@ -6,10 +6,11 @@ if exists("b:current_syntax")
   finish
 endif
 
-syntax keyword berestaKeyword слово устой дело береста ежели инако доколе повтор от до шаг вернуть прервать продолжить молви
+syntax keyword berestaKeyword слово устой дело уклад береста ежели инако доколе повтор от до шаг для каждого из вернуть прервать продолжить молви
 syntax keyword berestaType число дробь строка флаг ничто
 syntax keyword berestaBoolean правда кривда
 syntax keyword berestaOperator и или не
+syntax keyword berestaBuiltin длина к_строке из_строки внемли слушает патриот пишет в_число в_дробь мова
 
 syntax match berestaComment "//.*$"
 syntax region berestaComment start="/\*" end="\*/"
@@ -29,6 +30,7 @@ highlight default link berestaString String
 highlight default link berestaEscape SpecialChar
 highlight default link berestaNumber Number
 highlight default link berestaFunction Function
+highlight default link berestaBuiltin Function
 
 setlocal iskeyword+=а-яА-ЯёЁ
 

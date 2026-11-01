@@ -3,8 +3,8 @@
 #include <optional>
 #include <string>
 
-//: Типы бересты. Массив — отдельный вид с элементом и длиной.
-enum class TypeKind { Int, Float, String, Bool, Void, Array };
+//: Типы бересты. Массив и уклад — отдельные виды.
+enum class TypeKind { Int, Float, String, Bool, Void, Array, Struct };
 
 inline const char* type_name(TypeKind kind) {
     switch (kind) {
@@ -14,6 +14,7 @@ inline const char* type_name(TypeKind kind) {
         case TypeKind::Bool: return "флаг";
         case TypeKind::Void: return "ничто";
         case TypeKind::Array: return "массив";
+        case TypeKind::Struct: return "уклад";
     }
     return "?";
 }

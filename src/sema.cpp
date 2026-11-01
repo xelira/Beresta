@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,7 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"пишет", {Overload{{TK::String, TK::String}, TK::Bool, "b_write_file"}}},
         {"в_число", {Overload{{TK::Float}, TK::Int, "#to_int"}}},
         {"в_дробь", {Overload{{TK::Int}, TK::Float, "#to_float"}}},
+        {"мова", {Overload{{TK::String}, TK::String, "b_phrase"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},
@@ -84,6 +86,15 @@ public:
         push_scope();
         install_builtins();
 
+        // Пользовательский глобальный слой выше встроенного: свои имена
+        // перекрывают встроенные функции, а не конфликтуют с ними.
+        push_scope();
+
+        // 0. Уклады: без них не разобрать типы переменных.
+        for (auto& decl : program_.decls) {
+            if (auto* def = dynamic_cast<StructDecl*>(decl.get())) declare_struct(*def);
+        }
+
         // 1. Объявляем функции, чтобы работала рекурсия и вызовы «вперёд».
         for (auto& decl : program_.decls) {
             if (auto* func = dynamic_cast<FuncDecl*>(decl.get())) declare_func(*func);
@@ -106,6 +117,9 @@ public:
         push_scope();
         check_stmts(entry->body);
         pop_scope();
+
+        pop_scope();  // пользовательский глобальный слой
+        pop_scope();  // слой встроенных
     }
 
 private:
@@ -142,6 +156,46 @@ private:
             symbol.overloads = &overloads;
             scope_->define(add(std::move(symbol)));
         }
+    }
+
+    // --- уклады ------------------------------------------------------
+
+    void declare_struct(StructDecl& decl) {
+        if (structs_.count(decl.name) > 0) {
+            fail("уклад «" + decl.name + "» уже объявлен", decl.line, decl.col,
+                 static_cast<int>(decl.name.size()));
+        }
+
+        auto def = std::make_unique<StructDef>();
+        def->name = decl.name;
+
+        std::unordered_set<std::string> seen;
+        for (const Field& field : decl.fields) {
+            if (field.type == TK::Void) {
+                fail("поле «" + field.name + "» не может быть типа ничто", decl.line, decl.col,
+                     1, "ничто — это отсутствие значения");
+            }
+            if (!seen.insert(field.name).second) {
+                fail("поле «" + field.name + "» повторяется в укладе «" + decl.name + "»",
+                     decl.line, decl.col, static_cast<int>(field.name.size()));
+            }
+            def->fields.push_back(field);
+        }
+
+        if (def->fields.empty()) {
+            fail("уклад «" + decl.name + "» пуст", decl.line, decl.col,
+                 static_cast<int>(decl.name.size()), "добавьте хотя бы одно поле");
+        }
+
+        StructDef* raw = def.get();
+        program_.structs.push_back(std::move(def));
+        structs_[decl.name] = raw;
+        decl.def = raw;
+    }
+
+    const StructDef* find_struct(const std::string& name) const {
+        const auto it = structs_.find(name);
+        return it == structs_.end() ? nullptr : it->second;
     }
 
     // --- константы ---------------------------------------------------
@@ -316,6 +370,7 @@ private:
         if (auto* node = dynamic_cast<For*>(&stmt)) return check_for(*node);
         if (auto* node = dynamic_cast<ForEach*>(&stmt)) return check_foreach(*node);
         if (auto* node = dynamic_cast<IndexAssign*>(&stmt)) return check_index_assign(*node);
+        if (auto* node = dynamic_cast<MemberAssign*>(&stmt)) return check_member_assign(*node);
         if (auto* node = dynamic_cast<Return*>(&stmt)) return check_return(*node);
         if (auto* node = dynamic_cast<Break*>(&stmt)) {
             if (loop_depth_ == 0) {
@@ -335,6 +390,36 @@ private:
     }
 
     void check_var(VarDecl& decl) {
+        if (decl.is_struct) {
+            if (decl.is_array) {
+                fail("массив укладов пока не поддерживается", decl.line, decl.col,
+                     static_cast<int>(decl.name.size()));
+            }
+            if (decl.value) {
+                fail("уклад «" + decl.name + "» заполняется по полям", decl.line, decl.col,
+                     static_cast<int>(decl.name.size()),
+                     "напишите: " + decl.name + ".поле = значение;");
+            }
+            const StructDef* def = find_struct(decl.type_name);
+            if (def == nullptr) {
+                fail("неизвестный уклад «" + decl.type_name + "»", decl.line, decl.col,
+                     static_cast<int>(decl.type_name.size()),
+                     "объявите его: уклад Имя { поле: тип; }");
+            }
+
+            Symbol symbol;
+            symbol.name = decl.name;
+            symbol.type = TK::Struct;
+            symbol.layout = def;
+            symbol.kind = Symbol::Kind::Var;
+            symbol.cname = fresh_cname("b");
+            symbol.line = decl.line;
+            symbol.col = decl.col;
+            decl.symbol = add(std::move(symbol));
+            scope_->define(decl.symbol);
+            return;
+        }
+
         const TK declared = resolve_type(decl.type_name, decl.line, decl.col);
 
         if (decl.is_array) {
@@ -408,6 +493,11 @@ private:
                  static_cast<int>(stmt.name.size()),
                  "меняйте элементы: " + stmt.name + "[i] = значение;");
         }
+        if (symbol->type == TK::Struct) {
+            fail("уклад «" + stmt.name + "» нельзя присвоить целиком", stmt.line, stmt.col,
+                 static_cast<int>(stmt.name.size()),
+                 "меняйте поля: " + stmt.name + ".поле = значение;");
+        }
 
         const TK value_type = check_expr(*stmt.value);
         if (!assignable(value_type, symbol->type)) {
@@ -428,6 +518,10 @@ private:
         if (value_type == TK::Array) {
             fail("массив нельзя молвить целиком", stmt.value->line, stmt.value->col, 1,
                  "напечатайте элементы по одному");
+        }
+        if (value_type == TK::Struct) {
+            fail("уклад нельзя молвить целиком", stmt.value->line, stmt.value->col, 1,
+                 "напечатайте поля по одному");
         }
     }
 
@@ -576,6 +670,80 @@ private:
         stmt.symbol = symbol;
     }
 
+    void check_member_assign(MemberAssign& stmt) {
+        Symbol* symbol = scope_->lookup(stmt.base);
+        if (symbol == nullptr) {
+            fail("неизвестное имя «" + stmt.base + "»", stmt.line, stmt.col,
+                 static_cast<int>(stmt.base.size()));
+        }
+        if (symbol->type != TK::Struct) {
+            fail("«" + stmt.base + "» — не уклад, у него нет полей", stmt.line, stmt.col,
+                 static_cast<int>(stmt.base.size()));
+        }
+
+        const int index = field_index(symbol->layout, stmt.field);
+        if (index < 0) {
+            fail("у уклада «" + stmt.base + "» нет поля «" + stmt.field + "»", stmt.line,
+                 stmt.col, static_cast<int>(stmt.field.size()), fields_hint(symbol->layout));
+        }
+
+        const TK value_type = check_expr(*stmt.value);
+        const TK field_type = symbol->layout->fields[static_cast<size_t>(index)].type;
+        if (value_type == TK::Struct) {
+            fail("уклады нельзя присваивать целиком", stmt.value->line, stmt.value->col, 1,
+                 "присваивайте поля по одному");
+        }
+        if (!assignable(value_type, field_type)) {
+            fail("в поле «" + stmt.field + "» типа " + type_name(field_type) +
+                     " нельзя положить " + type_name(value_type),
+                 stmt.value->line, stmt.value->col);
+        }
+
+        stmt.symbol = symbol;
+        stmt.field_index = index;
+    }
+
+    static int field_index(const StructDef* def, const std::string& name) {
+        if (def == nullptr) return -1;
+        for (std::size_t i = 0; i < def->fields.size(); ++i) {
+            if (def->fields[i].name == name) return static_cast<int>(i);
+        }
+        return -1;
+    }
+
+    static std::string fields_hint(const StructDef* def) {
+        std::string hint = "поля: ";
+        for (std::size_t i = 0; i < def->fields.size(); ++i) {
+            if (i > 0) hint += ", ";
+            hint += def->fields[i].name + ": " + type_name(def->fields[i].type);
+        }
+        return hint;
+    }
+
+    TK check_member(Member& expr) {
+        Symbol* symbol = scope_->lookup(expr.base);
+        if (symbol == nullptr) {
+            fail("неизвестное имя «" + expr.base + "»", expr.line, expr.col,
+                 static_cast<int>(expr.base.size()));
+        }
+        if (symbol->type != TK::Struct) {
+            fail("«" + expr.base + "» — не уклад, у него нет полей", expr.line, expr.col,
+                 static_cast<int>(expr.base.size()));
+        }
+
+        const int index = field_index(symbol->layout, expr.field);
+        if (index < 0) {
+            fail("у уклада «" + expr.base + "» нет поля «" + expr.field + "»", expr.line,
+                 expr.col, static_cast<int>(expr.field.size()),
+                 fields_hint(symbol->layout));
+        }
+
+        expr.symbol = symbol;
+        expr.layout = symbol->layout;
+        expr.member_index = index;
+        return record(expr, symbol->layout->fields[static_cast<size_t>(index)].type);
+    }
+
     void check_return(Return& stmt) {
         if (!current_return_) {
             fail("«вернуть» вне дела", stmt.line, stmt.col, 1,
@@ -621,6 +789,7 @@ private:
         if (auto* node = dynamic_cast<Binary*>(&expr)) return check_binary(*node);
         if (auto* node = dynamic_cast<Call*>(&expr)) return check_call(*node);
         if (auto* node = dynamic_cast<Index*>(&expr)) return check_index(*node);
+        if (auto* node = dynamic_cast<Member*>(&expr)) return check_member(*node);
         fail("неизвестное выражение", expr.line, expr.col);
     }
 
@@ -639,6 +808,9 @@ private:
         if (symbol->type == TK::Array) {
             expr.element = symbol->element;
             expr.count = symbol->count;
+        }
+        if (symbol->type == TK::Struct) {
+            expr.layout = symbol->layout;
         }
         return record(expr, symbol->type);
     }
@@ -824,6 +996,7 @@ private:
 
     Program& program_;
     std::vector<std::unique_ptr<Scope>> scopes_;
+    std::unordered_map<std::string, StructDef*> structs_;
     Scope* scope_ = nullptr;
     int counter_ = 0;
     std::optional<TK> current_return_;

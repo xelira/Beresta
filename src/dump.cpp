@@ -36,6 +36,8 @@ void dump_expr(const Expr& expr, int depth, std::ostringstream& out) {
     } else if (const auto* node = dynamic_cast<const Index*>(&expr)) {
         out << pad << "Элемент " << node->name << "\n";
         dump_expr(*node->index, depth + 1, out);
+    } else if (const auto* node = dynamic_cast<const Member*>(&expr)) {
+        out << pad << "Поле " << node->base << "." << node->field << "\n";
     } else {
         out << pad << "?\n";
     }
@@ -53,6 +55,14 @@ void dump_stmt(const Stmt& stmt, int depth, std::ostringstream& out) {
         out << pad << "Присвоить элементу " << node->name << "\n";
         dump_expr(*node->index, depth + 1, out);
         dump_expr(*node->value, depth + 1, out);
+    } else if (const auto* node = dynamic_cast<const MemberAssign*>(&stmt)) {
+        out << pad << "Присвоить полю " << node->base << "." << node->field << "\n";
+        dump_expr(*node->value, depth + 1, out);
+    } else if (const auto* node = dynamic_cast<const StructDecl*>(&stmt)) {
+        out << pad << "Уклад " << node->name << "\n";
+        for (const auto& field : node->fields) {
+            out << pad << "  Поле " << field.name << ": " << type_name(field.type) << "\n";
+        }
     } else if (const auto* node = dynamic_cast<const ConstDecl*>(&stmt)) {
         out << pad << "Устой " << node->name << ": " << node->type_name << "\n";
         if (node->value) dump_expr(*node->value, depth + 1, out);

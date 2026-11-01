@@ -19,6 +19,9 @@ struct Expr : Node {
     //: для выражений-массивов
     TypeKind element = TypeKind::Void;
     int count = 0;
+    //: для выражений-укладов
+    const StructDef* layout = nullptr;
+    int member_index = -1;
 };
 
 using ExprPtr = std::unique_ptr<Expr>;
@@ -80,6 +83,15 @@ struct Index : Expr {
     explicit Index(std::string n) : name(std::move(n)) {}
 };
 
+//: Поле уклада: точка.х
+struct Member : Expr {
+    std::string base;
+    std::string field;
+    Symbol* symbol = nullptr;
+    int field_index = -1;
+    Member(std::string b, std::string f) : base(std::move(b)), field(std::move(f)) {}
+};
+
 struct Stmt : Node {};
 using StmtPtr = std::unique_ptr<Stmt>;
 
@@ -91,6 +103,7 @@ struct VarDecl : Stmt {
     Symbol* symbol = nullptr;
     bool is_array = false;
     int array_count = 0;
+    bool is_struct = false;
 };
 
 struct IndexAssign : Stmt {
@@ -98,6 +111,20 @@ struct IndexAssign : Stmt {
     ExprPtr index;
     ExprPtr value;
     Symbol* symbol = nullptr;
+};
+
+struct MemberAssign : Stmt {
+    std::string base;
+    std::string field;
+    ExprPtr value;
+    Symbol* symbol = nullptr;
+    int field_index = -1;
+};
+
+struct StructDecl : Stmt {
+    std::string name;
+    std::vector<Field> fields;
+    StructDef* def = nullptr;
 };
 
 struct ConstDecl : Stmt {
@@ -187,4 +214,6 @@ struct Program : Node {
     StmtPtr entry;  // Block
     //: Все символы программы. Дерево ссылается на них сырыми указателями.
     std::vector<std::unique_ptr<Symbol>> symbols;
+    //: Описания укладов, на которые ссылается дерево.
+    std::vector<std::unique_ptr<StructDef>> structs;
 };

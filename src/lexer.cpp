@@ -11,7 +11,7 @@ namespace {
 const std::unordered_set<std::string>& keyword_set() {
     static const std::unordered_set<std::string> words = {
         // объявления
-        "слово", "устой", "дело", "береста",
+        "слово", "устой", "дело", "береста", "уклад",
         // управление
         "ежели", "инако", "доколе", "повтор", "от", "до", "шаг",
         "для", "каждого", "из",
@@ -27,8 +27,12 @@ const std::unordered_set<std::string>& keyword_set() {
 }
 
 bool is_ident_start(unsigned char ch) {
-    // Всё, что не ASCII, считаем буквой: кириллица в UTF-8 занимает >= 0x80.
-    return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch >= 0x80;
+    // Только кириллица (UTF-8 >= 0x80) и подчёркивание. Латынь запрещена.
+    return ch == '_' || ch >= 0x80;
+}
+
+bool is_latin_letter(unsigned char ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
 }
 
 bool is_ident_continue(unsigned char ch) {
@@ -68,6 +72,11 @@ public:
             if (ch == '"') {
                 string_literal();
                 continue;
+            }
+
+            if (is_latin_letter(ch)) {
+                fail("пиши на русском", line_, col_, 1,
+                     "имена и слова бересты — только кириллицей");
             }
 
             if (is_ident_start(ch)) {
@@ -217,7 +226,7 @@ private:
         }
 
         const char ch = peek(0);
-        if (std::string("+-*/%=<>(){}[],:;!").find(ch) != std::string::npos) {
+        if (std::string("+-*/%=<>(){}[],:;!.").find(ch) != std::string::npos) {
             add(TokKind::Op, std::string(1, ch), line_, col_, 1);
             advance();
             return true;
