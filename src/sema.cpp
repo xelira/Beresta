@@ -36,11 +36,32 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
     return table;
 }
 
-std::string signature(const std::string& name, const std::vector<TK>& params, TK ret) {
+std::string param_text(const ParamInfo& param) {
+    if (param.type == TypeKind::Array) {
+        return "[" + std::to_string(param.count) + "]" + type_name(param.element);
+    }
+    if (param.type == TypeKind::Struct) {
+        return param.layout != nullptr ? param.layout->name : "уклад";
+    }
+    return type_name(param.type);
+}
+
+std::string signature(const std::string& name, const std::vector<TypeKind>& params, TypeKind ret) {
     std::string result = name + "(";
     for (std::size_t i = 0; i < params.size(); ++i) {
         if (i > 0) result += ", ";
         result += type_name(params[i]);
+    }
+    result += ") -> ";
+    result += type_name(ret);
+    return result;
+}
+
+std::string signature(const std::string& name, const std::vector<ParamInfo>& params, TypeKind ret) {
+    std::string result = name + "(";
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        if (i > 0) result += ", ";
+        result += param_text(params[i]);
     }
     result += ") -> ";
     result += type_name(ret);
@@ -248,7 +269,7 @@ private:
     // --- функции -----------------------------------------------------
 
     void declare_func(FuncDecl& decl) {
-        std::vector<TK> param_types;
+        std::vector<ParamInfo> param_types;
         for (Param& param : decl.params) {
             for (const Param& earlier : decl.params) {
                 if (&earlier == &param) break;
@@ -257,7 +278,35 @@ private:
                          static_cast<int>(param.name.size()));
                 }
             }
-            param_types.push_back(resolve_type(param.type_name, param.line, param.col));
+
+            ParamInfo info;
+            if (param.is_struct) {
+                if (param.is_array) {
+                    fail("массив укладов в параметрах не поддерживается", param.line,
+                         param.col, static_cast<int>(param.name.size()));
+                }
+                info.layout = find_struct(param.type_name);
+                if (info.layout == nullptr) {
+                    fail("неизвестный уклад «" + param.type_name + "»", param.line, param.col,
+                         static_cast<int>(param.type_name.size()),
+                         "объявите его через «уклад Имя { ... }»");
+                }
+                info.type = TK::Struct;
+            } else if (param.is_array) {
+                info.type = TK::Array;
+                info.element = resolve_type(param.type_name, param.line, param.col);
+                info.count = param.array_count;
+                if (info.element == TK::Void) {
+                    fail("массив из ничто невозможен", param.line, param.col);
+                }
+            } else {
+                info.type = resolve_type(param.type_name, param.line, param.col);
+                if (info.type == TK::Void) {
+                    fail("параметр не может быть типа ничто", param.line, param.col,
+                         static_cast<int>(param.name.size()));
+                }
+            }
+            param_types.push_back(info);
         }
 
         Symbol symbol;
@@ -269,8 +318,8 @@ private:
 
         int usual_params = 0;
         int float_params = 0;
-        for (TK type : param_types) {
-            if (type == TK::Float) {
+        for (const ParamInfo& info : param_types) {
+            if (info.type == TK::Float) {
                 ++float_params;
             } else {
                 ++usual_params;
@@ -298,10 +347,17 @@ private:
         current_return_ = decl.symbol->ret;
 
         push_scope();
-        for (Param& param : decl.params) {
+        for (std::size_t i = 0; i < decl.params.size(); ++i) {
+            Param& param = decl.params[i];
+            const ParamInfo& info = decl.symbol->params[i];
+
             Symbol symbol;
             symbol.name = param.name;
-            symbol.type = param.declared;
+            symbol.type = info.type;
+            symbol.element = info.element;
+            symbol.count = info.count;
+            symbol.layout = info.layout;
+            symbol.by_ref = info.type == TK::Array || info.type == TK::Struct;
             symbol.kind = Symbol::Kind::Param;
             symbol.cname = fresh_cname("p");
             symbol.line = param.line;
@@ -981,10 +1037,29 @@ private:
         }
 
         for (std::size_t i = 0; i < arg_types.size(); ++i) {
-            if (!assignable(arg_types[i], symbol->params[i])) {
+            const ParamInfo& info = symbol->params[i];
+            const Expr& arg = *expr.args[i];
+
+            bool matches = false;
+            if (info.type == TK::Array) {
+                matches = arg_types[i] == TK::Array && arg.element == info.element &&
+                          arg.count == info.count;
+            } else if (info.type == TK::Struct) {
+                matches = arg_types[i] == TK::Struct && arg.layout == info.layout;
+            } else {
+                matches = assignable(arg_types[i], info.type);
+            }
+
+            if (!matches) {
+                std::string actual = type_name(arg_types[i]);
+                if (arg_types[i] == TK::Array) {
+                    actual = "[" + std::to_string(arg.count) + "]" + type_name(arg.element);
+                } else if (arg_types[i] == TK::Struct && arg.layout != nullptr) {
+                    actual = arg.layout->name;
+                }
+
                 fail("аргумент " + std::to_string(i + 1) + " для «" + expr.name +
-                         "» должен быть " + type_name(symbol->params[i]) + ", а он " +
-                         type_name(arg_types[i]),
+                         "» должен быть " + param_text(info) + ", а он " + actual,
                      expr.args[i]->line, expr.args[i]->col, 1,
                      signature(symbol->name, symbol->params, symbol->ret));
             }

@@ -442,6 +442,30 @@ private:
         return std::to_string(-8 * (symbol->slot + symbol->count)) + "(%rbp)";
     }
 
+    //: Адрес уклада: поля лежат подряд вверх по стеку, как элементы массива.
+    static std::string struct_base(const Symbol* symbol) {
+        return std::to_string(-8 * (symbol->slot + static_cast<int>(symbol->layout->fields.size()))) +
+               "(%rbp)";
+    }
+
+    //: Кладёт адрес массива в %rdx: локального или переданного по ссылке.
+    void load_array_base(const Symbol* symbol) {
+        if (symbol->by_ref) {
+            instruction("mov " + slot_ref(symbol->slot) + ", %rdx");
+        } else {
+            instruction("lea " + array_base(symbol) + ", %rdx");
+        }
+    }
+
+    //: Кладёт адрес уклада в %rdx.
+    void load_struct_base(const Symbol* symbol) {
+        if (symbol->by_ref) {
+            instruction("mov " + slot_ref(symbol->slot) + ", %rdx");
+        } else {
+            instruction("lea " + struct_base(symbol) + ", %rdx");
+        }
+    }
+
     // --- кадр вызова --------------------------------------------------
 
     static int assign_slots(Stmt* stmt, int next) {
@@ -538,12 +562,13 @@ private:
         int int_index = 0;
         int float_index = 0;
         for (Param& param : func.params) {
-            if (param.declared == TypeKind::Float) {
+            const Symbol* symbol = param.symbol;
+            if (!symbol->by_ref && symbol->type == TypeKind::Float) {
                 if (float_index >= MAX_FLOAT_ARGS) {
                     fail("слишком много параметров-дробей", param.line, param.col);
                 }
                 instruction("movsd %xmm" + std::to_string(float_index++) + ", " +
-                            slot_ref(param.symbol->slot));
+                            slot_ref(symbol->slot));
             } else {
                 if (int_index >= MAX_INT_ARGS) {
                     fail("слишком много параметров", param.line, param.col,
@@ -551,7 +576,7 @@ private:
                          "в бересте максимум 6 обычных параметров");
                 }
                 instruction("mov " + std::string(INT_ARG_REGS[int_index++]) + ", " +
-                            slot_ref(param.symbol->slot));
+                            slot_ref(symbol->slot));
             }
         }
 
@@ -701,9 +726,10 @@ private:
     }
 
     void emit_struct_init(VarDecl& decl) {
-        for (std::size_t i = 0; i < decl.symbol->layout->fields.size(); ++i) {
+        const int count = static_cast<int>(decl.symbol->layout->fields.size());
+        for (int i = 0; i < count; ++i) {
             const std::string slot =
-                std::to_string(-8 * (decl.symbol->slot + 1 + static_cast<int>(i))) + "(%rbp)";
+                std::to_string(-8 * (decl.symbol->slot + count - i)) + "(%rbp)";
             switch (decl.symbol->layout->fields[i].type) {
                 case TypeKind::String:
                     instruction("lea .Lstr_empty(%rip), %rax");
@@ -766,7 +792,7 @@ private:
         pop_value(TypeKind::Int);  // индекс в %rcx
 
         emit_bounds(stmt, stmt.symbol->count, "%rcx");
-        instruction("lea " + array_base(stmt.symbol) + ", %rdx");
+        load_array_base(stmt.symbol);
 
         if (stmt.symbol->element == TypeKind::Float) {
             instruction("movsd %xmm0, (%rdx,%rcx,8)");
@@ -919,7 +945,7 @@ private:
         instruction("mov " + slot_ref(stmt.counter_slot) + ", %rax");
         instruction("cmp $" + std::to_string(count) + ", %rax");
         instruction("jge " + done);
-        instruction("lea " + array_base(stmt.source) + ", %rdx");
+        load_array_base(stmt.source);
 
         if (stmt.symbol->type == TypeKind::Float) {
             instruction("movsd (%rdx,%rax,8), %xmm0");
@@ -1185,7 +1211,7 @@ private:
     void emit_index(Index& expr) {
         emit_expr_as_int(*expr.index);
         emit_bounds(expr, expr.count, "%rax");
-        instruction("lea " + array_base(expr.symbol) + ", %rdx");
+        load_array_base(expr.symbol);
 
         if (expr.element == TypeKind::Float) {
             instruction("movsd (%rdx,%rax,8), %xmm0");
@@ -1195,8 +1221,21 @@ private:
     }
 
     void emit_member(Member& expr) {
+        if (expr.symbol->by_ref) {
+            instruction("mov " + slot_ref(expr.symbol->slot) + ", %rdx");
+            const std::string address =
+                std::to_string(8 * expr.member_index) + "(%rdx)";
+            if (expr.type == TypeKind::Float) {
+                instruction("movsd " + address + ", %xmm0");
+            } else {
+                instruction("mov " + address + ", %rax");
+            }
+            return;
+        }
+
+        const int count = static_cast<int>(expr.symbol->layout->fields.size());
         const std::string slot =
-            std::to_string(-8 * (expr.symbol->slot + 1 + expr.member_index)) + "(%rbp)";
+            std::to_string(-8 * (expr.symbol->slot + count - expr.member_index)) + "(%rbp)";
         if (expr.type == TypeKind::Float) {
             instruction("movsd " + slot + ", %xmm0");
         } else {
@@ -1206,16 +1245,47 @@ private:
 
     void emit_member_assign(MemberAssign& stmt) {
         emit_expr(*stmt.value);
-        const std::string slot =
-            std::to_string(-8 * (stmt.symbol->slot + 1 + stmt.field_index)) + "(%rbp)";
+
         const TypeKind field_type =
             stmt.symbol->layout->fields[static_cast<std::size_t>(stmt.field_index)].type;
 
+        if (stmt.symbol->by_ref) {
+            instruction("mov " + slot_ref(stmt.symbol->slot) + ", %rdx");
+            const std::string address =
+                std::to_string(8 * stmt.field_index) + "(%rdx)";
+            if (field_type == TypeKind::Float) {
+                instruction("movsd %xmm0, " + address);
+            } else {
+                instruction("mov %rax, " + address);
+            }
+            return;
+        }
+
+        const int count = static_cast<int>(stmt.symbol->layout->fields.size());
+        const std::string slot =
+            std::to_string(-8 * (stmt.symbol->slot + count - stmt.field_index)) + "(%rbp)";
         if (field_type == TypeKind::Float) {
             instruction("movsd %xmm0, " + slot);
         } else {
             instruction("mov %rax, " + slot);
         }
+    }
+
+    void emit_object_address(Expr& expr) {
+        auto* ident = dynamic_cast<Ident*>(&expr);
+        if (ident == nullptr || ident->symbol == nullptr) {
+            fail("в функцию можно передать только имя массива или уклада", expr.line, expr.col);
+        }
+
+        Symbol* symbol = ident->symbol;
+        if (symbol->type == TypeKind::Array) {
+            load_array_base(symbol);
+        } else if (symbol->type == TypeKind::Struct) {
+            load_struct_base(symbol);
+        } else {
+            fail("это не массив и не уклад", expr.line, expr.col);
+        }
+        instruction("mov %rdx, %rax");
     }
 
     void emit_call(Call& call_expr) {
@@ -1243,8 +1313,13 @@ private:
 
         const int base_depth = stack_depth_;
         for (auto& arg : call_expr.args) {
-            emit_expr(*arg);
-            push_value(arg->type);
+            if (arg->type == TypeKind::Array || arg->type == TypeKind::Struct) {
+                emit_object_address(*arg);
+                push_value(TypeKind::Int);
+            } else {
+                emit_expr(*arg);
+                push_value(arg->type);
+            }
         }
 
         const int count = static_cast<int>(call_expr.args.size());

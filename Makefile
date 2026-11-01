@@ -35,4 +35,10 @@ examples: $(TARGET)
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all install clean examples
+installer:
+	cd installer && go build -trimpath -o ../$(BUILD)/beresta-install .
+
+installer-windows:
+	cd installer && GOOS=windows GOARCH=amd64 go build -trimpath -o ../$(BUILD)/beresta-install.exe .
+
+.PHONY: all install clean examples installer installer-windows

@@ -24,6 +24,14 @@ struct StructDef {
     std::vector<Field> fields;
 };
 
+//: Описание параметра функции. Массивы и уклады передаются по ссылке.
+struct ParamInfo {
+    TypeKind type = TypeKind::Void;
+    TypeKind element = TypeKind::Void;  // для массива
+    int count = 0;                      // для массива
+    const StructDef* layout = nullptr;  // для уклада
+};
+
 //: Запись имени в таблице символов. Живёт в Program::symbols.
 struct Symbol {
     enum class Kind { Var, Const, Param, Func, Builtin, Loop };
@@ -36,12 +44,14 @@ struct Symbol {
     int col = 0;
     int slot = -1;
     bool global = false;
+    //: параметр-ссылка на массив или уклад: в слоте лежит указатель
+    bool by_ref = false;
     //: для массивов — тип элемента и длина
     TypeKind element = TypeKind::Void;
     int count = 0;
     //: для уклада — его описание
     const StructDef* layout = nullptr;
-    std::vector<TypeKind> params;
+    std::vector<ParamInfo> params;
     TypeKind ret = TypeKind::Void;
     const std::vector<Overload>* overloads = nullptr;
 };

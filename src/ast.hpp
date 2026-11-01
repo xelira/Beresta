@@ -198,6 +198,9 @@ struct Param : Node {
     std::string type_name;
     TypeKind declared = TypeKind::Void;
     Symbol* symbol = nullptr;
+    bool is_array = false;
+    int array_count = 0;
+    bool is_struct = false;
 };
 
 struct FuncDecl : Stmt {

@@ -18,6 +18,14 @@ int precedence_of(const std::string& op) {
     return it == table.end() ? 0 : it->second;
 }
 
+struct TypeSpec {
+    std::string name;
+    TypeKind kind = TypeKind::Void;
+    bool is_array = false;
+    int count = 0;
+    bool is_struct = false;
+};
+
 [[noreturn]] void unexpected(const Token& token, const std::string& what) {
     fail("ожидалось " + what + ", а встретилось " + token.describe(), token.line, token.col,
          token.length);
@@ -153,14 +161,17 @@ private:
             while (true) {
                 const Token& param_name = expect_ident("имя параметра");
                 expect_op(":");
-                const Token& param_type = expect_type();
+                const TypeSpec spec = parse_type_spec();
 
                 Param param;
                 param.line = param_name.line;
                 param.col = param_name.col;
                 param.name = param_name.value;
-                param.type_name = param_type.value;
-                param.declared = *type_from_word(param_type.value);
+                param.type_name = spec.name;
+                param.declared = spec.kind;
+                param.is_array = spec.is_array;
+                param.array_count = spec.count;
+                param.is_struct = spec.is_struct;
                 decl->params.push_back(std::move(param));
 
                 if (!match_op(",")) break;
@@ -331,13 +342,9 @@ private:
         return decl;
     }
 
-    StmtPtr parse_var() {
-        const Token& keyword = expect_kw("слово");
-        const Token& name = expect_ident("имя переменной");
-        expect_op(":");
+    TypeSpec parse_type_spec() {
+        TypeSpec spec;
 
-        bool is_array = false;
-        int array_count = 0;
         if (check_op("[")) {
             advance();
             const Token& count_token = peek();
@@ -350,37 +357,45 @@ private:
                 fail("размер массива должен быть от 1 до 100000", count_token.line,
                      count_token.col, count_token.length);
             }
-            array_count = static_cast<int>(size);
+            spec.is_array = true;
+            spec.count = static_cast<int>(size);
             expect_op("]");
-            is_array = true;
         }
 
-        const Token& type_token = peek();
-        bool is_struct = false;
-        TypeKind declared = TypeKind::Void;
-
-        if (type_token.kind == TokKind::Keyword && is_type_word(type_token.value)) {
-            declared = *type_from_word(type_token.value);
+        const Token& token = peek();
+        if (token.kind == TokKind::Keyword && is_type_word(token.value)) {
+            spec.kind = *type_from_word(token.value);
             advance();
-        } else if (type_token.kind == TokKind::Ident) {
-            is_struct = true;
+        } else if (token.kind == TokKind::Ident) {
+            spec.is_struct = true;
             advance();
         } else {
-            unexpected(type_token, "тип");
+            unexpected(token, "тип");
         }
+
+        spec.name = token.value;
+        return spec;
+    }
+
+    StmtPtr parse_var() {
+        const Token& keyword = expect_kw("слово");
+        const Token& name = expect_ident("имя переменной");
+        expect_op(":");
+
+        const TypeSpec spec = parse_type_spec();
 
         auto decl = std::make_unique<VarDecl>();
         decl->line = keyword.line;
         decl->col = keyword.col;
         decl->name = name.value;
-        decl->type_name = type_token.value;
-        decl->declared = declared;
-        decl->is_array = is_array;
-        decl->array_count = array_count;
-        decl->is_struct = is_struct;
+        decl->type_name = spec.name;
+        decl->declared = spec.kind;
+        decl->is_array = spec.is_array;
+        decl->array_count = spec.count;
+        decl->is_struct = spec.is_struct;
 
         if (match_op("=")) {
-            if (is_array) {
+            if (spec.is_array) {
                 fail("массив пока нельзя инициализировать списком", keyword.line, keyword.col,
                      static_cast<int>(name.value.size()),
                      "объявите массив и заполните элементы по одному");
