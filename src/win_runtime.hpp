@@ -10,11 +10,20 @@ inline const char* WINDOWS_RUNTIME_C = R"C(
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <time.h>
 
 typedef long long b_int;
 
 void* b_stack_top = 0;
+long long b_argc = 0;
+char** b_argv = 0;
+
+static int b_remove_utf8(const char* path) {
+    wchar_t wide[1024];
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 1024);
+    return _wremove(wide);
+}
 
 static FILE* b_fopen_utf8(const char* path, const char* mode) {
     wchar_t wide_path[1024];
@@ -322,4 +331,144 @@ long long b_contains(const char* text, const char* piece) {
 long long b_starts_with(const char* text, const char* prefix) {
     return strncmp(text, prefix, strlen(prefix)) == 0;
 }
+
+/* --- окружение, время, файлы, строки --------------------------------- */
+
+long long b_arg_count(void) { return b_argc; }
+
+char* b_arg(long long index) {
+    if (index < 0 || index >= b_argc || b_argv == 0) return (char*)"";
+    return b_argv[index];
+}
+
+char* b_getenv(const char* name) {
+    const char* value = getenv(name);
+    return (char*)(value != 0 ? value : "");
+}
+
+long long b_time(void) { return (long long)time(0); }
+
+void b_sleep(long long milliseconds) {
+    if (milliseconds <= 0) return;
+    Sleep((DWORD)milliseconds);
+}
+
+long b_file_exists(const char* path) {
+    FILE* file = b_fopen_utf8(path, "rb");
+    if (file == 0) return 0;
+    fclose(file);
+    return 1;
+}
+
+long long b_file_size(const char* path) {
+    FILE* file = b_fopen_utf8(path, "rb");
+    if (file == 0) return -1;
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fclose(file);
+    return (long long)size;
+}
+
+long b_remove_file(const char* path) { return b_remove_utf8(path) == 0; }
+
+char* b_substring(const char* text, long long start, long long length) {
+    size_t size = strlen(text);
+    if (start < 0) start = 0;
+    if (length < 0) length = 0;
+
+    size_t position = 0;
+    size_t index = 0;
+    while (position < size && index < (size_t)start) {
+        position++;
+        while (position < size && ((unsigned char)text[position] & 0xC0) == 0x80) position++;
+        index++;
+    }
+    size_t byte_start = position;
+
+    size_t taken = 0;
+    while (position < size && taken < (size_t)length) {
+        position++;
+        while (position < size && ((unsigned char)text[position] & 0xC0) == 0x80) position++;
+        taken++;
+    }
+    size_t byte_end = position;
+
+    size_t count = byte_end - byte_start;
+    char* result = (char*)b_gc_alloc(count + 1);
+    memcpy(result, text + byte_start, count);
+    result[count] = 0;
+    return result;
+}
+
+long long b_find(const char* text, const char* piece) {
+    const char* found = strstr(text, piece);
+    if (found == 0) return -1;
+    long long characters = 0;
+    for (const char* cursor = text; cursor < found; ++cursor) {
+        if (((unsigned char)*cursor & 0xC0) != 0x80) ++characters;
+    }
+    return characters;
+}
+
+static int b_hex_digit(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+char* b_url_encode(const char* text) {
+    size_t size = strlen(text);
+    char* result = (char*)b_gc_alloc(size * 3 + 1);
+    size_t out = 0;
+    for (size_t i = 0; i < size; ++i) {
+        unsigned char ch = (unsigned char)text[i];
+        if (isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+            result[out++] = (char)ch;
+        } else {
+            static const char* hex = "0123456789ABCDEF";
+            result[out++] = '%';
+            result[out++] = hex[ch >> 4];
+            result[out++] = hex[ch & 15];
+        }
+    }
+    result[out] = 0;
+    return result;
+}
+
+char* b_url_decode(const char* text) {
+    size_t size = strlen(text);
+    char* result = (char*)b_gc_alloc(size + 1);
+    size_t out = 0;
+    for (size_t i = 0; i < size; ++i) {
+        if (text[i] == '%' && i + 2 < size) {
+            int high = b_hex_digit(text[i + 1]);
+            int low = b_hex_digit(text[i + 2]);
+            if (high >= 0 && low >= 0) {
+                result[out++] = (char)((high << 4) | low);
+                i += 2;
+                continue;
+            }
+        }
+        if (text[i] == '+') {
+            result[out++] = ' ';
+        } else {
+            result[out++] = text[i];
+        }
+    }
+    result[out] = 0;
+    return result;
+}
+
+void b_exit(long long code) { exit((int)code); }
+
+void b_abort(const char* message) {
+    printf("береста: %s\n", message);
+    fflush(stdout);
+    exit(1);
+}
+
+long long b_run(const char* command) { return (long long)system(command); }
+
+void b_flush(void) { fflush(0); }
 )C";

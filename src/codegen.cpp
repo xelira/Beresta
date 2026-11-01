@@ -582,7 +582,11 @@ private:
                  "b_gc_limit:\n    .quad 1048576\n"
                  "b_gc_live:\n    .quad 0\n"
                  "b_stack_top:\n    .quad 0\n"
-                 "b_random_seeded:\n    .quad 0\n";
+                 "b_random_seeded:\n    .quad 0\n"
+                 "    .globl b_argc\n"
+                 "b_argc:\n    .quad 0\n"
+                 "    .globl b_argv\n"
+                 "b_argv:\n    .quad 0\n";
     }
 
     void emit_phrase_table() {
@@ -862,6 +866,13 @@ private:
         stack_depth_ = 0;
         loops_.clear();
         return_label_ = new_label("main_ret");
+        if (windows()) {
+            instruction("mov %rcx, b_argc(%rip)");
+            instruction("mov %rdx, b_argv(%rip)");
+        } else {
+            instruction("mov %rdi, b_argc(%rip)");
+            instruction("mov %rsi, b_argv(%rip)");
+        }
         instruction("mov %rbp, b_stack_top(%rip)");
 
         emit_block_body(entry);
