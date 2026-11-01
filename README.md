@@ -48,7 +48,7 @@ make launcher
 
 ```sh
 make installer && ./build/beresta-install
-make installer-windows   # build/beresta-install.exe для Windows (через WSL)
+make installer-windows   # build/beresta-install.exe — нативный установщик Windows
 ```
 
 Подробнее — [installer/README.md](installer/README.md).
@@ -250,7 +250,8 @@ editors/vim/       подсветка синтаксиса
 
 ## Что уже есть и чего нет
 
-Есть: статическая типизация, рекурсия, функции до 6 обычных и 8 дробных
+Есть: две цели сборки — Linux (System V/ELF) и Windows (Microsoft x64/PE);
+статическая типизация, рекурсия, функции до 6 обычных и 8 дробных
 параметров, циклы, массивы с проверкой границ, уклады с полями, указатели на
 простые типы и уклады, модули `привлечь`, строки UTF-8, ввод-вывод и работа с
 файлами, константы, ленивые `и`/`или`, составное присваивание, словарь фраз

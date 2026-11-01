@@ -39,42 +39,47 @@ make installer-windows   # build/beresta-install.exe   (Windows)
 
 ## Windows
 
-Запустить `beresta-install.exe`.
+Запустить `beresta-install.exe`. Режим по умолчанию — **нативный**, без WSL:
 
-Бэкенд бересты испускает ассемблер под x86-64 System V и линкует ELF, поэтому
-нативные `.exe`-программы на бересте пока не собираются: это отдельный
-PE-бэкенд. Установщик честно решает задачу через WSL:
-
-1. Проверяет наличие WSL и дистрибутива (`wsl -l -q`).
-2. Ставит `g++` и `binutils` внутри WSL (через `wsl -u root`, если нужно).
-3. Передаёт исходники в WSL и собирает компилятор там.
-4. Создаёт `%LOCALAPPDATA%\beresta\bin\berestac.bat` — обёртку над WSL.
-5. Добавляет этот каталог в пользовательский PATH.
+1. Скачивает `berestac-windows-amd64.exe` и `beresta-windows-amd64.exe` из
+   последнего релиза.
+2. Скачивает портативный MinGW-w64 (winlibs) и распаковывает в
+   `%LOCALAPPDATA%\beresta\toolchain`.
+3. Кладёт компилятор и лаунчер в `%LOCALAPPDATA%\beresta\bin`.
+4. Добавляет оба каталога в пользовательский PATH.
 
 После этого в новом терминале:
 
 ```bat
-berestac version
-berestac run examples\привет.бер
+beresta version
+beresta new моя_программа
+beresta run моя_программа
 ```
 
-Если WSL нет:
+`berestac` собирает настоящие Windows `.exe` (PE32+, Microsoft x64) через
+`as.exe` и `gcc.exe` из MinGW.
+
+Если нативная установка не удалась, установщик предложит WSL-режим. Его можно
+запросить и явно:
 
 ```bat
-wsl --install
+beresta-install.exe --wsl
 ```
 
-и перезагрузка.
+WSL-режим ставит `g++`/`binutils` внутри дистрибутива и создаёт обёртку
+`berestac.bat`.
 
-### Почему не нативно
+### Как это устроено
 
-Кодогенератор бересты использует:
+У бересты два бэкенда:
 
-- соглашение вызовов System V: аргументы в `rdi, rsi, rdx, rcx, r8, r9`;
-- ELF-разметку вызовов (`@PLT`) и POSIX-функции (`read`).
+- Linux: System V AMD64, GNU as, ELF;
+- Windows: Microsoft x64 (`rcx, rdx, r8, r9`, shadow space), PE, рантайм на C,
+  который компилирует тот же MinGW.
 
-У Windows другие регистры (`rcx, rdx, r8, r9`), теневое пространство стека и
-PE-линковка. Это отдельный бэкенд, а не «флаг компилятора».
+Ограничение Windows-цели: не больше 4 обычных и 4 дробных параметров/аргументов
+(регистров в ABI меньше, чем в System V). Массивы и уклады по-прежнему
+передаются по ссылке и считаются одним параметром.
 
 ## Релизы
 
@@ -84,6 +89,7 @@ PE-линковка. Это отдельный бэкенд, а не «флаг 
 - `beresta-install-linux-arm64`
 - `beresta-install-windows-amd64.exe`
 - `beresta-linux-amd64` (лаунчер с вложенным компилятором)
+- `berestac-windows-amd64.exe` (нативный компилятор)
 - `beresta-linux-arm64`
 - `beresta-windows-amd64.exe`
 - `beresta-bundle-linux-amd64.tar.gz` (лаунчер + компилятор + примеры + docs)
@@ -95,7 +101,6 @@ workflow.
 
 ## Что установщик не делает
 
-- Не собирает нативные Windows-бинарники на бересте.
 - Не трогает системный PATH (только пользовательский).
-- Не ставит пакеты без явного намерения: на Linux нужен root, на Windows
-  используется `wsl -u root`.
+- Не ставит пакеты без явного намерения: на Linux нужен root; на Windows
+  скачивает только портативный MinGW в свой каталог.

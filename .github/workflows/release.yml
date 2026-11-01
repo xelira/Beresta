@@ -32,6 +32,13 @@ jobs:
           make
           tar -czf dist/beresta-linux-amd64.tar.gz -C build berestac
 
+      - name: Собрать нативный компилятор для Windows
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64
+          make berestac-windows CROSS=x86_64-w64-mingw32-g++
+          cp build/berestac.exe dist/berestac-windows-amd64.exe
+
       - name: Собрать лаунчеры
         run: |
           cp build/berestac cli/berestac
@@ -45,6 +52,7 @@ jobs:
           mkdir -p bundle
           cp dist/beresta-linux-amd64 bundle/beresta
           cp build/berestac bundle/berestac
+          cp build/berestac.exe bundle/berestac.exe
           cp README.md ЯЗЫК.md bundle/
           cp -r examples bundle/
           tar -czf dist/beresta-bundle-linux-amd64.tar.gz -C bundle .

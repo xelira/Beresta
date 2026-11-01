@@ -10,14 +10,10 @@
 
 #include "diagnostic.hpp"
 #include "symbol.hpp"
+#include "win_runtime.hpp"
 
 namespace {
 
-const char* INT_ARG_REGS[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-constexpr int MAX_INT_ARGS = 6;
-constexpr int MAX_FLOAT_ARGS = 8;
-
-std::string slot_ref(int slot) { return std::to_string(-8 * (slot + 1)) + "(%rbp)"; }
 
 std::string escape_asm(const std::string& text) {
     std::string out;
@@ -267,6 +263,39 @@ b_str_to_int:
     jmp strtoll@PLT
 
     .p2align 4
+b_random:
+    push %rbp
+    mov %rsp, %rbp
+    sub $16, %rsp
+    mov %rdi, -8(%rbp)
+    cmpq $0, b_random_seeded(%rip)
+    jne .Lrnd_ready
+    movq $1, b_random_seeded(%rip)
+    xor %edi, %edi
+    call time@PLT
+    mov %rax, -16(%rbp)
+    call clock@PLT
+    xor %rax, -16(%rbp)
+    call getpid@PLT
+    xor %rax, -16(%rbp)
+    mov -16(%rbp), %edi
+    call srand@PLT
+.Lrnd_ready:
+    call rand@PLT
+    mov -8(%rbp), %rcx
+    test %rcx, %rcx
+    jle .Lrnd_zero
+    xor %edx, %edx
+    div %rcx
+    mov %rdx, %rax
+    leave
+    ret
+.Lrnd_zero:
+    xor %eax, %eax
+    leave
+    ret
+
+    .p2align 4
 b_str_concat:
     push %rbp
     mov %rsp, %rbp
@@ -486,11 +515,18 @@ b_write_file:
 
 class Codegen {
 public:
+    explicit Codegen(Target target) : target_(target) {}
+
+    bool windows() const { return target_ == Target::Windows; }
+
     std::string run(Program& program) {
         emit_runtime_rodata();
-        emit_gc_globals();
-        emit_phrase_table();
-        text_ << RUNTIME << "\n";
+
+        if (!windows()) {
+            emit_gc_globals();
+            emit_phrase_table();
+            text_ << RUNTIME << "\n";
+        }
 
         for (auto& decl : program.decls) {
             if (auto* constant = dynamic_cast<ConstDecl*>(decl.get())) {
@@ -509,8 +545,12 @@ public:
         std::ostringstream out;
         out << text_.str();
         out << "\n    .data\n" << data_.str();
-        out << "\n    .section .rodata\n" << rodata_.str();
-        out << "    .section .note.GNU-stack,\"\",@progbits\n";
+        if (windows()) {
+            out << "\n    .section .rdata,\"dr\"\n" << rodata_.str();
+        } else {
+            out << "\n    .section .rodata\n" << rodata_.str();
+            out << "    .section .note.GNU-stack,\"\",@progbits\n";
+        }
         return out.str();
     }
 
@@ -540,7 +580,8 @@ private:
                  "b_gc_bytes:\n    .quad 0\n"
                  "b_gc_limit:\n    .quad 1048576\n"
                  "b_gc_live:\n    .quad 0\n"
-                 "b_stack_top:\n    .quad 0\n";
+                 "b_stack_top:\n    .quad 0\n"
+                 "b_random_seeded:\n    .quad 0\n";
     }
 
     void emit_phrase_table() {
@@ -599,19 +640,48 @@ private:
 
     static std::string align16(int bytes) { return std::to_string((bytes + 15) / 16 * 16); }
 
+    //: На Windows два слота заняты сохранёнными rdi/rsi (callee-saved).
+    int extra_slots() const { return windows() ? 2 : 0; }
+
+    std::string int_arg(std::size_t index) const {
+        static const char* sysv[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+        static const char* win[] = {"%rcx", "%rdx", "%r8", "%r9"};
+        return windows() ? win[index] : sysv[index];
+    }
+
+    std::string float_arg(std::size_t index) const {
+        return "%xmm" + std::to_string(index);
+    }
+
+    int max_int_args() const { return windows() ? 4 : 6; }
+    int max_float_args() const { return windows() ? 4 : 8; }
+
+    std::string call_symbol(const std::string& name) const {
+        if (!windows()) return name;
+        if (name.size() > 4 && name.compare(name.size() - 4, 4, "@PLT") == 0) {
+            return name.substr(0, name.size() - 4);
+        }
+        return name;
+    }
+
+    std::string slot_ref(int slot) const {
+        return std::to_string(-8 * (slot + 1 + extra_slots())) + "(%rbp)";
+    }
+
     std::string mem(const Symbol* symbol) {
         if (symbol->global) return symbol->cname + "(%rip)";
         return slot_ref(symbol->slot);
     }
 
     //: Адрес нулевого элемента массива. Элементы лежат подряд вверх по стеку.
-    static std::string array_base(const Symbol* symbol) {
-        return std::to_string(-8 * (symbol->slot + symbol->count)) + "(%rbp)";
+    std::string array_base(const Symbol* symbol) const {
+        return std::to_string(-8 * (symbol->slot + symbol->count + extra_slots())) + "(%rbp)";
     }
 
     //: Адрес уклада: поля лежат подряд вверх по стеку, как элементы массива.
-    static std::string struct_base(const Symbol* symbol) {
-        return std::to_string(-8 * (symbol->slot + static_cast<int>(symbol->layout->fields.size()))) +
+    std::string struct_base(const Symbol* symbol) const {
+        return std::to_string(-8 * (symbol->slot + static_cast<int>(symbol->layout->fields.size()) +
+                                    extra_slots())) +
                "(%rbp)";
     }
 
@@ -678,15 +748,16 @@ private:
     // --- вызовы -------------------------------------------------------
 
     void call(const std::string& target) {
-        const bool pad = (stack_depth_ % 2) != 0;
-        if (pad) {
-            instruction("sub $8, %rsp");
-            ++stack_depth_;
+        int bytes = windows() ? 32 : 0;
+        if ((stack_depth_ + bytes / 8) % 2 != 0) bytes += 8;
+        if (bytes > 0) {
+            instruction("sub $" + std::to_string(bytes) + ", %rsp");
+            stack_depth_ += bytes / 8;
         }
-        instruction("call " + target);
-        if (pad) {
-            instruction("add $8, %rsp");
-            --stack_depth_;
+        instruction("call " + call_symbol(target));
+        if (bytes > 0) {
+            instruction("add $" + std::to_string(bytes) + ", %rsp");
+            stack_depth_ -= bytes / 8;
         }
     }
 
@@ -720,29 +791,29 @@ private:
         const std::string frame = align16(next * 8);
         const std::string& name = func.symbol->cname;
 
-        text_ << "    .p2align 4\n    .type " << name << ", @function\n";
+        text_ << "    .p2align 4\n";
+        if (!windows()) text_ << "    .type " << name << ", @function\n";
         label(name);
-        instruction("push %rbp");
-        instruction("mov %rsp, %rbp");
-        if (next > 0) instruction("sub $" + frame + ", %rsp");
+        emit_prologue(next);
 
         int int_index = 0;
         int float_index = 0;
         for (Param& param : func.params) {
             const Symbol* symbol = param.symbol;
             if (!symbol->by_ref && symbol->type == TypeKind::Float) {
-                if (float_index >= MAX_FLOAT_ARGS) {
+                if (float_index >= max_float_args()) {
                     fail("слишком много параметров-дробей", param.line, param.col);
                 }
-                instruction("movsd %xmm" + std::to_string(float_index++) + ", " +
-                            slot_ref(symbol->slot));
+                instruction("movsd " + float_arg(static_cast<std::size_t>(float_index++)) +
+                            ", " + slot_ref(symbol->slot));
             } else {
-                if (int_index >= MAX_INT_ARGS) {
+                if (int_index >= max_int_args()) {
                     fail("слишком много параметров", param.line, param.col,
                          static_cast<int>(param.name.size()),
-                         "в бересте максимум 6 обычных параметров");
+                         windows() ? "на Windows максимум 4 обычных параметра"
+                                   : "в бересте максимум 6 обычных параметров");
                 }
-                instruction("mov " + std::string(INT_ARG_REGS[int_index++]) + ", " +
+                instruction("mov " + int_arg(static_cast<std::size_t>(int_index++)) + ", " +
                             slot_ref(symbol->slot));
             }
         }
@@ -754,20 +825,38 @@ private:
         emit_block_body(*dynamic_cast<Block*>(func.body.get()));
 
         label(return_label_);
+        emit_epilogue();
+        if (!windows()) text_ << "    .size " << name << ", .-" << name << "\n";
+        text_ << "\n";
+    }
+
+    void emit_prologue(int slots) {
+        instruction("push %rbp");
+        instruction("mov %rsp, %rbp");
+        if (windows()) {
+            // rdi и rsi — callee-saved в Microsoft x64
+            instruction("push %rdi");
+            instruction("push %rsi");
+        }
+        if (slots > 0) instruction("sub $" + align16(slots * 8) + ", %rsp");
+    }
+
+    void emit_epilogue() {
+        if (windows()) {
+            instruction("mov -8(%rbp), %rdi");
+            instruction("mov -16(%rbp), %rsi");
+        }
         instruction("leave");
         instruction("ret");
-        text_ << "    .size " << name << ", .-" << name << "\n\n";
     }
 
     void emit_main(Block& entry) {
-        int next = assign_slots(&entry, 0);
-        const std::string frame = align16(next * 8);
+        const int next = assign_slots(&entry, 0);
 
-        text_ << "    .p2align 4\n    .globl main\n    .type main, @function\n";
+        text_ << "    .p2align 4\n    .globl main\n";
+        if (!windows()) text_ << "    .type main, @function\n";
         label("main");
-        instruction("push %rbp");
-        instruction("mov %rsp, %rbp");
-        if (next > 0) instruction("sub $" + frame + ", %rsp");
+        emit_prologue(next);
 
         stack_depth_ = 0;
         loops_.clear();
@@ -778,9 +867,9 @@ private:
 
         label(return_label_);
         instruction("mov $0, %eax");
-        instruction("leave");
-        instruction("ret");
-        text_ << "    .size main, .-main\n\n";
+        emit_epilogue();
+        if (!windows()) text_ << "    .size main, .-main\n";
+        text_ << "\n";
     }
 
     // --- данные -------------------------------------------------------
@@ -918,7 +1007,7 @@ private:
         const int count = static_cast<int>(decl.symbol->layout->fields.size());
         for (int i = 0; i < count; ++i) {
             const std::string slot =
-                std::to_string(-8 * (decl.symbol->slot + count - i)) + "(%rbp)";
+                std::to_string(-8 * (decl.symbol->slot + count - i + extra_slots())) + "(%rbp)";
             switch (decl.symbol->layout->fields[i].type) {
                 case TypeKind::String:
                     instruction("lea .Lstr_empty(%rip), %rax");
@@ -938,7 +1027,7 @@ private:
     void emit_array_init(VarDecl& decl) {
         for (int i = 0; i < decl.symbol->count; ++i) {
             const std::string slot =
-                std::to_string(-8 * (decl.symbol->slot + decl.symbol->count - i)) + "(%rbp)";
+                std::to_string(-8 * (decl.symbol->slot + decl.symbol->count - i + extra_slots())) + "(%rbp)";
             switch (decl.symbol->element) {
                 case TypeKind::String:
                     instruction("lea .Lstr_empty(%rip), %rax");
@@ -1012,17 +1101,21 @@ private:
 
         switch (stmt.value->type) {
             case TypeKind::String:
-                instruction("mov %rax, %rdi");
+                instruction("mov %rax, " + int_arg(0));
                 call("puts@PLT");
                 break;
             case TypeKind::Int:
-                instruction("mov %rax, %rsi");
-                instruction("lea .Lfmt_int(%rip), %rdi");
+                instruction("mov %rax, " + int_arg(1));
+                instruction("lea .Lfmt_int(%rip), " + int_arg(0));
                 instruction("xor %eax, %eax");
                 call("printf@PLT");
                 break;
             case TypeKind::Float:
-                instruction("lea .Lfmt_float(%rip), %rdi");
+                if (windows()) {
+                    // В Windows x64 дробный аргумент varargs дублируется в GP-регистре.
+                    instruction("movq %xmm0, " + int_arg(1));
+                }
+                instruction("lea .Lfmt_float(%rip), " + int_arg(0));
                 instruction("mov $1, %eax");
                 call("printf@PLT");
                 break;
@@ -1031,11 +1124,11 @@ private:
                 const std::string done = new_label("print_end");
                 instruction("test %rax, %rax");
                 instruction("je " + is_false);
-                instruction("lea .Lstr_true(%rip), %rdi");
+                instruction("lea .Lstr_true(%rip), " + int_arg(0));
                 call("puts@PLT");
                 instruction("jmp " + done);
                 label(is_false);
-                instruction("lea .Lstr_false(%rip), %rdi");
+                instruction("lea .Lstr_false(%rip), " + int_arg(0));
                 call("puts@PLT");
                 label(done);
                 break;
@@ -1312,7 +1405,7 @@ private:
                 const int count = static_cast<int>(member->symbol->layout->fields.size());
                 instruction("lea " +
                             std::to_string(-8 * (member->symbol->slot + count -
-                                                 member->member_index)) +
+                                                 member->member_index + extra_slots())) +
                             "(%rbp), %rax");
             }
             return;
@@ -1348,8 +1441,8 @@ private:
             push_value(TypeKind::String);
             emit_expr(*expr.right);
             pop_value(TypeKind::String);  // левая строка в %rcx, правая в %rax
-            instruction("mov %rcx, %rdi");
-            instruction("mov %rax, %rsi");
+            instruction("mov %rcx, " + int_arg(0));
+            instruction("mov %rax, " + int_arg(1));
             call("b_str_concat");
             return;
         }
@@ -1498,8 +1591,8 @@ private:
         } else if (op == "*") {
             instruction("imul %rcx, %rax");
         } else if (op == "/" || op == "%") {
-            instruction("mov %rcx, %rdi");
-            instruction("mov %rax, %rsi");
+            instruction("mov %rcx, " + int_arg(0));
+            instruction("mov %rax, " + int_arg(1));
             call(op == "/" ? "b_div" : "b_mod");
         } else {
             fail("неизвестная целочисленная операция «" + op + "»", expr.line, expr.col);
@@ -1574,8 +1667,8 @@ private:
         emit_expr(*expr.right);
         pop_value(TypeKind::String);
 
-        instruction("mov %rcx, %rdi");
-        instruction("mov %rax, %rsi");
+        instruction("mov %rcx, " + int_arg(0));
+        instruction("mov %rax, " + int_arg(1));
         call("strcmp@PLT");
         instruction("cmp $0, %eax");
         instruction(std::string(setcc_for(expr.op)) + " %al");
@@ -1620,7 +1713,7 @@ private:
 
         const int count = static_cast<int>(expr.symbol->layout->fields.size());
         const std::string slot =
-            std::to_string(-8 * (expr.symbol->slot + count - expr.member_index)) + "(%rbp)";
+            std::to_string(-8 * (expr.symbol->slot + count - expr.member_index + extra_slots())) + "(%rbp)";
         if (expr.type == TypeKind::Float) {
             instruction("movsd " + slot + ", %xmm0");
         } else {
@@ -1665,7 +1758,7 @@ private:
 
         const int count = static_cast<int>(stmt.symbol->layout->fields.size());
         const std::string slot =
-            std::to_string(-8 * (stmt.symbol->slot + count - stmt.field_index)) + "(%rbp)";
+            std::to_string(-8 * (stmt.symbol->slot + count - stmt.field_index + extra_slots())) + "(%rbp)";
         if (field_type == TypeKind::Float) {
             instruction("movsd %xmm0, " + slot);
         } else {
@@ -1707,7 +1800,11 @@ private:
                 return;
             }
             if (call_expr.cname == "#live") {
-                instruction("mov b_gc_live(%rip), %rax");
+                if (windows()) {
+                    call("b_gc_live_bytes");
+                } else {
+                    instruction("mov b_gc_live(%rip), %rax");
+                }
                 return;
             }
             if (call_expr.cname.empty()) {
@@ -1732,38 +1829,42 @@ private:
         }
 
         const int count = static_cast<int>(call_expr.args.size());
-        const int pad = (stack_depth_ % 2 != 0) ? 8 : 0;
-        if (pad) {
-            instruction("sub $8, %rsp");
-            ++stack_depth_;
+        int base = windows() ? 32 : 0;
+        if ((stack_depth_ + base / 8) % 2 != 0) base += 8;
+        if (base > 0) {
+            instruction("sub $" + std::to_string(base) + ", %rsp");
+            stack_depth_ += base / 8;
         }
 
         int int_index = 0;
         int float_index = 0;
         for (int i = 0; i < count; ++i) {
-            const int offset = pad + (count - 1 - i) * 8;
+            const int offset = base + (count - 1 - i) * 8;
             const std::string address = std::to_string(offset) + "(%rsp)";
             const TypeKind type = call_expr.args[static_cast<std::size_t>(i)]->widen_to_float
                                       ? TypeKind::Float
                                       : call_expr.args[static_cast<std::size_t>(i)]->type;
 
             if (type == TypeKind::Float) {
-                if (float_index >= MAX_FLOAT_ARGS) {
+                if (float_index >= max_float_args()) {
                     fail("слишком много аргументов-дробей", call_expr.line, call_expr.col);
                 }
-                instruction("movsd " + address + ", %xmm" + std::to_string(float_index++));
+                instruction("movsd " + address + ", " +
+                            float_arg(static_cast<std::size_t>(float_index++)));
             } else {
-                if (int_index >= MAX_INT_ARGS) {
+                if (int_index >= max_int_args()) {
                     fail("слишком много аргументов", call_expr.line, call_expr.col, 1,
-                         "в бересте максимум 6 обычных аргументов");
+                         windows() ? "на Windows максимум 4 обычных аргумента"
+                                   : "в бересте максимум 6 обычных аргументов");
                 }
-                instruction("mov " + address + ", " + INT_ARG_REGS[int_index++]);
+                instruction("mov " + address + ", " +
+                            int_arg(static_cast<std::size_t>(int_index++)));
             }
         }
 
-        instruction("call " + call_expr.cname);
+        instruction("call " + call_symbol(call_expr.cname));
 
-        const int cleanup = pad + count * 8;
+        const int cleanup = base + count * 8;
         if (cleanup > 0) {
             instruction("add $" + std::to_string(cleanup) + ", %rsp");
             stack_depth_ = base_depth;
@@ -1778,6 +1879,7 @@ private:
     std::ostringstream text_;
     std::ostringstream data_;
     std::ostringstream rodata_;
+    Target target_ = Target::Linux;
     std::vector<LoopLabels> loops_;
     std::string return_label_;
     int stack_depth_ = 0;
@@ -1788,4 +1890,6 @@ private:
 
 }  // namespace
 
-std::string generate(Program& program) { return Codegen().run(program); }
+std::string generate(Program& program, Target target) { return Codegen(target).run(program); }
+
+const char* windows_runtime_c() { return WINDOWS_RUNTIME_C; }

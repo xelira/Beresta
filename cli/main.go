@@ -21,7 +21,7 @@ import (
 	"strings"
 )
 
-const version = "0.4.1"
+const version = "0.5.0"
 
 func main() {
 	arguments := os.Args[1:]
@@ -97,7 +97,7 @@ func commandRun(arguments []string) int {
 		return fail(err)
 	}
 
-	output := temporaryBinary(entry)
+	output := temporaryBinary(entry, compiler.wsl)
 	fmt.Println("береста: собираю «" + entry + "»")
 
 	if code := invoke(compiler, []string{"build", entry, "-o", output}, false); code != 0 {
@@ -105,9 +105,9 @@ func commandRun(arguments []string) int {
 	}
 
 	fmt.Println("береста: запускаю")
-	code := invoke(output, programArgs, true)
+	code := invoke(toolchain{path: output}, programArgs, true)
 
-	removeQuietly(output)
+	removeQuietly(output, compiler.wsl)
 	return code
 }
 
@@ -212,10 +212,14 @@ func commandDoctor() int {
 	if err != nil {
 		fmt.Println("компилятор: не найден")
 	} else {
-		fmt.Println("компилятор:", compiler)
+		mode := "нативный"
+		if compiler.wsl {
+			mode = "через WSL"
+		}
+		fmt.Println("компилятор:", compiler.path, "("+mode+")")
 	}
 
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && compiler.wsl {
 		check := exec.Command("wsl.exe", "-e", "bash", "-lc",
 			"command -v berestac; command -v as; command -v cc")
 		output, err := check.CombinedOutput()
@@ -302,15 +306,20 @@ func hasEntryBlock(file string) bool {
 
 // --- запуск компилятора и программы ----------------------------------------
 
-func findCompiler() (string, error) {
+type toolchain struct {
+	path string
+	wsl  bool
+}
+
+func findCompiler() (toolchain, error) {
 	if len(embeddedCompiler) > 0 {
 		if path, err := extractEmbeddedCompiler(); err == nil {
-			return path, nil
+			return toolchain{path: path}, nil
 		}
 	}
 
 	if value := os.Getenv("BERESTAC"); value != "" {
-		return value, nil
+		return toolchain{path: value}, nil
 	}
 
 	executable, err := os.Executable()
@@ -319,21 +328,21 @@ func findCompiler() (string, error) {
 		for _, name := range []string{"berestac", "berestac.exe"} {
 			candidate := filepath.Join(directory, name)
 			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
+				return toolchain{path: candidate}, nil
 			}
 		}
 	}
 
-	if runtime.GOOS == "windows" {
-		// Внутри WSL компилятор обычно лежит в PATH или в ~/.beresta/bin.
-		return "berestac", nil
-	}
-
 	if path, err := exec.LookPath("berestac"); err == nil {
-		return path, nil
+		return toolchain{path: path}, nil
 	}
 
-	return "", errors.New("не найден berestac. Запустите установщик или укажите BERESTAC")
+	if runtime.GOOS == "windows" {
+		// Нативного компилятора нет — остаётся WSL.
+		return toolchain{path: "berestac", wsl: true}, nil
+	}
+
+	return toolchain{}, errors.New("не найден berestac. Запустите установщик или укажите BERESTAC")
 }
 
 func extractEmbeddedCompiler() (string, error) {
@@ -358,8 +367,8 @@ func extractEmbeddedCompiler() (string, error) {
 	return path, nil
 }
 
-func invoke(program string, arguments []string, interactive bool) int {
-	command := buildCommand(program, arguments)
+func invoke(tool toolchain, arguments []string, interactive bool) int {
+	command := buildCommand(tool, arguments)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -382,12 +391,12 @@ func invoke(program string, arguments []string, interactive bool) int {
 	return 1
 }
 
-func buildCommand(program string, arguments []string) *exec.Cmd {
-	if runtime.GOOS != "windows" {
-		return exec.Command(program, arguments...)
+func buildCommand(tool toolchain, arguments []string) *exec.Cmd {
+	if !tool.wsl {
+		return exec.Command(tool.path, arguments...)
 	}
 
-	// На Windows компилятор живёт в WSL. Пути переводим в Linux-вид.
+	// Режим WSL: компилятор и пути — в Linux-представлении.
 	converted := make([]string, 0, len(arguments))
 	for _, argument := range arguments {
 		if looksLikePath(argument) {
@@ -397,8 +406,7 @@ func buildCommand(program string, arguments []string) *exec.Cmd {
 		}
 	}
 
-	command := exec.Command("wsl.exe", append([]string{"-e", program}, converted...)...)
-	return command
+	return exec.Command("wsl.exe", append([]string{"-e", tool.path}, converted...)...)
 }
 
 func looksLikePath(value string) bool {
@@ -425,10 +433,13 @@ func toWSLPath(path string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func temporaryBinary(entry string) string {
+func temporaryBinary(entry string, wsl bool) string {
 	name := strings.TrimSuffix(filepath.Base(entry), filepath.Ext(entry))
-	if runtime.GOOS == "windows" {
+	if wsl {
 		return "/tmp/beresta-run-" + strconv.Itoa(os.Getpid()) + "-" + name
+	}
+	if runtime.GOOS == "windows" {
+		name += ".exe"
 	}
 
 	directory, err := os.MkdirTemp("", "beresta-run-")
@@ -438,8 +449,8 @@ func temporaryBinary(entry string) string {
 	return filepath.Join(directory, name)
 }
 
-func removeQuietly(path string) {
-	if runtime.GOOS == "windows" {
+func removeQuietly(path string, wsl bool) {
+	if wsl {
 		exec.Command("wsl.exe", "-e", "rm", "-rf", path).Run()
 		return
 	}

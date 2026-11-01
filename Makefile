@@ -47,6 +47,12 @@ launcher:
 launcher-windows:
 	cd cli && GOOS=windows GOARCH=amd64 go build -trimpath -o ../$(BUILD)/beresta.exe .
 
+# Нативный компилятор под Windows (кросс-сборка MinGW).
+berestac-windows:
+	$(CROSS) -std=c++20 -O2 -static -o $(BUILD)/berestac.exe src/*.cpp -lshell32
+
+CROSS ?= x86_64-w64-mingw32-g++
+
 # Лаунчер с вложенным компилятором: один файл, внутри berestac.
 launcher-bundle: $(TARGET)
 	cp $(TARGET) cli/berestac

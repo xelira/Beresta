@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-var toolVersion = "0.4.1"
+var toolVersion = "0.5.0"
 
 var (
 	flagPrefix = flag.String("prefix", "", "куда установить (Linux; по умолчанию ~/.local)")
@@ -34,6 +34,7 @@ var (
 	flagNoPath = flag.Bool("no-path", false, "не подсказывать про PATH")
 	flagCheck  = flag.Bool("check", false, "только проверить инструменты")
 	flagDeps   = flag.Bool("deps", true, "ставить недостающие зависимости, если можно")
+	flagWSL    = flag.Bool("wsl", false, "на Windows поставить через WSL вместо нативного режима")
 )
 
 const defaultRepo = "https://codeload.github.com/xelira/Beresta/zip/refs/heads/main"
@@ -376,6 +377,18 @@ func printPathHint(directory string) {
 // --- Windows (через WSL) -------------------------------------------------
 
 func installWindows() error {
+	if !*flagWSL {
+		if err := installWindowsNative(); err == nil {
+			return nil
+		} else {
+			fmt.Println("нативная установка не удалась:", err)
+			fmt.Println("пробую через WSL…")
+		}
+	}
+	return installWindowsWSL()
+}
+
+func installWindowsWSL() error {
 	if !commandExists("wsl.exe") {
 		return errors.New("не найден WSL. Установите его:\n" +
 			"  wsl --install\n" +

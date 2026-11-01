@@ -50,21 +50,28 @@ make launcher-bundle      # build/beresta-bundle — компилятор вну
 
 ### Windows
 
-Запустить `beresta-install-windows-amd64.exe`. Установщик поднимет WSL, поставит
-`g++`/`binutils` внутри дистрибутива, соберёт компилятор и создаст
-`%LOCALAPPDATA%\beresta\bin\berestac.bat`.
+Запустить `beresta-install-windows-amd64.exe`. Установщик работает нативно:
 
-После этого в консоли:
+1. скачивает компилятор `berestac-windows-amd64.exe`;
+2. скачивает портативный MinGW-w64 (ассемблер и линкер);
+3. ставит всё в `%LOCALAPPDATA%\beresta`;
+4. добавляет каталоги в пользовательский PATH.
+
+После этого в новом терминале:
 
 ```bat
-berestac version
-berestac run пример.бер
+beresta version
+beresta new моя_программа
+beresta run моя_программа
 ```
 
-Для лаунчера есть `beresta-windows-amd64.exe`.
+Собираются настоящие Windows `.exe` (PE32+, Microsoft x64). WSL не нужен.
 
-> Нативные PE-программы на бересте пока не собираются: бэкенд испускает
-> System V/ELF. WSL здесь — честный способ запустить такой бинарник на Windows.
+Если нативный режим не завёлся, есть запасной:
+
+```bat
+beresta-install.exe --wsl
+```
 
 ---
 
@@ -485,8 +492,7 @@ cc: /usr/bin/cc
 
 **Кракозябры вместо русского** — файл должен быть в UTF-8.
 
-**Windows: «не найден WSL»** — выполните `wsl --install`, перезагрузитесь и
-запустите установщик снова.
+**Windows: не находится `as` или `gcc`** — переустановите `beresta-install.exe`: он скачивает MinGW в `%LOCALAPPDATA%\\beresta\\toolchain` и прописывает PATH. После установки откройте новый терминал.
 
 ---
 
