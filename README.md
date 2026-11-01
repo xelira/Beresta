@@ -30,6 +30,19 @@ make                     # собрать компилятор в build/berestac
 make install             # (по желанию) в /usr/local/bin/berestac
 ```
 
+Максимально просто — лаунчер:
+
+```sh
+make launcher
+./build/beresta new моя_программа
+./build/beresta run моя_программа
+./build/beresta run examples/модули.бер
+./build/beresta build моя_программа -o моя_программа.bin
+```
+
+`beresta` принимает файл или папку, сам находит точку входа, собирает и
+запускает с выводом в консоль. Подробности — [cli/README.md](cli/README.md).
+
 Или одним установщиком:
 
 ```sh
@@ -175,6 +188,18 @@ make installer-windows   # build/beresta-install.exe для Windows (через 
 
 
 ## Команды
+
+Лаунчер:
+
+```sh
+beresta run <файл.бер | папка> [-- аргументы]
+beresta build <файл.бер | папка> [-o выход]
+beresta check <файл.бер | папка>
+beresta new <папка>
+beresta doctor
+```
+
+Компилятор:
 
 ```sh
 berestac build <файл.бер> [-o <бинарник>] [-S] [--keep-asm] [--asm <файл.s>]

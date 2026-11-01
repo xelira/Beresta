@@ -31,12 +31,33 @@ jobs:
         run: |
           make
           tar -czf dist/beresta-linux-amd64.tar.gz -C build berestac
-          cd dist && sha256sum * > SHA256SUMS.txt
 
-      - name: Проверить компилятор
+      - name: Собрать лаунчеры
+        run: |
+          cp build/berestac cli/berestac
+          (cd cli && CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -tags bundle -trimpath -ldflags "-s -w" -o ../dist/beresta-linux-amd64 .)
+          rm -f cli/berestac
+          (cd cli && CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../dist/beresta-linux-arm64 .)
+          (cd cli && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../dist/beresta-windows-amd64.exe .)
+
+      - name: Собрать бандл
+        run: |
+          mkdir -p bundle
+          cp dist/beresta-linux-amd64 bundle/beresta
+          cp build/berestac bundle/berestac
+          cp README.md ЯЗЫК.md bundle/
+          cp -r examples bundle/
+          tar -czf dist/beresta-bundle-linux-amd64.tar.gz -C bundle .
+
+      - name: Проверить
         run: |
           ./build/berestac version
-          ./build/berestac run examples/привет.бер
+          ./dist/beresta-linux-amd64 run examples/привет.бер
+          ./dist/beresta-linux-amd64 run examples/модули.бер
+
+      - name: Контрольные суммы
+        run: |
+          cd dist && sha256sum * > SHA256SUMS.txt
 
       - name: Опубликовать релиз
         if: startsWith(github.ref, 'refs/tags/')

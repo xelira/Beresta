@@ -45,6 +45,12 @@ int run_command(const std::string& command) {
     return -1;
 }
 
+//: Инструмент можно подменить через окружение: BERESTA_AS, BERESTA_CC.
+std::string tool(const char* variable, const char* fallback) {
+    const char* value = std::getenv(variable);
+    return (value != nullptr && *value != '\0') ? std::string(value) : std::string(fallback);
+}
+
 fs::path make_temp_dir() {
     const char* base = std::getenv("TMPDIR");
     std::string pattern = std::string(base && *base ? base : "/tmp") + "/beresta-XXXXXX";
@@ -102,15 +108,17 @@ std::string build(const std::string& input, const BuildOptions& options) {
         write_file(asm_path.string(), assembly);
     }
 
-    const int assemble_status = run_command("as --64 -o " + quote(temp_obj.string()) + " " +
-                                            quote(temp_asm.string()));
+    const int assemble_status =
+        run_command(quote(tool("BERESTA_AS", "as")) + " --64 -o " + quote(temp_obj.string()) +
+                    " " + quote(temp_asm.string()));
     if (assemble_status != 0) {
         fs::remove_all(temp_dir);
         fail("ассемблер не принял сгенерированный код — это баг берёсты");
     }
 
-    const int link_status =
-        run_command("cc -o " + quote(output_path.string()) + " " + quote(temp_obj.string()));
+    const int link_status = run_command(quote(tool("BERESTA_CC", "cc")) + " -o " +
+                                        quote(output_path.string()) + " " +
+                                        quote(temp_obj.string()));
     fs::remove_all(temp_dir);
 
     if (link_status != 0) fail("не удалось слинковать программу (cc вернул ошибку)");

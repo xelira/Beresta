@@ -83,6 +83,10 @@ PE-линковка. Это отдельный бэкенд, а не «флаг 
 - `beresta-install-linux-amd64`
 - `beresta-install-linux-arm64`
 - `beresta-install-windows-amd64.exe`
+- `beresta-linux-amd64` (лаунчер с вложенным компилятором)
+- `beresta-linux-arm64`
+- `beresta-windows-amd64.exe`
+- `beresta-bundle-linux-amd64.tar.gz` (лаунчер + компилятор + примеры + docs)
 - `beresta-linux-amd64.tar.gz` (сам компилятор)
 - `SHA256SUMS.txt`
 

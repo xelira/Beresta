@@ -41,4 +41,16 @@ installer:
 installer-windows:
 	cd installer && GOOS=windows GOARCH=amd64 go build -trimpath -o ../$(BUILD)/beresta-install.exe .
 
-.PHONY: all install clean examples installer installer-windows
+launcher:
+	cd cli && go build -trimpath -o ../$(BUILD)/beresta .
+
+launcher-windows:
+	cd cli && GOOS=windows GOARCH=amd64 go build -trimpath -o ../$(BUILD)/beresta.exe .
+
+# Лаунчер с вложенным компилятором: один файл, внутри berestac.
+launcher-bundle: $(TARGET)
+	cp $(TARGET) cli/berestac
+	cd cli && go build -tags bundle -trimpath -o ../$(BUILD)/beresta-bundle .
+	rm -f cli/berestac
+
+.PHONY: all install clean examples installer installer-windows launcher launcher-windows launcher-bundle
