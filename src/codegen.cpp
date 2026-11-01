@@ -802,10 +802,17 @@ private:
                 break;
             }
             case TypeKind::Float: {
-                const auto* literal = dynamic_cast<const FloatLit*>(decl.value.get());
-                if (literal == nullptr) fail("устой должен быть литералом", decl.line, decl.col);
+                double value = 0;
+                if (const auto* float_literal = dynamic_cast<const FloatLit*>(decl.value.get())) {
+                    value = float_literal->value;
+                } else if (const auto* int_literal =
+                               dynamic_cast<const IntLit*>(decl.value.get())) {
+                    value = static_cast<double>(int_literal->value);
+                } else {
+                    fail("устой должен быть литералом", decl.line, decl.col);
+                }
                 std::uint64_t bits = 0;
-                std::memcpy(&bits, &literal->value, sizeof bits);
+                std::memcpy(&bits, &value, sizeof bits);
                 data_ << "    .quad " << bits << "\n";
                 break;
             }
@@ -849,7 +856,13 @@ private:
         if (auto* node = dynamic_cast<MemberAssign*>(&stmt)) return emit_member_assign(*node);
         if (auto* node = dynamic_cast<DerefAssign*>(&stmt)) return emit_deref_assign(*node);
         if (auto* node = dynamic_cast<Return*>(&stmt)) {
-            if (node->value) emit_expr(*node->value);
+            if (node->value) {
+                if (node->value->widen_to_float) {
+                    emit_expr_as_float(*node->value);
+                } else {
+                    emit_expr(*node->value);
+                }
+            }
             instruction("jmp " + return_label_);
             return;
         }
@@ -871,7 +884,11 @@ private:
         if (decl.symbol->type == TypeKind::Array) return emit_array_init(decl);
 
         if (decl.value) {
-            emit_expr(*decl.value);
+            if (decl.value->widen_to_float) {
+                emit_expr_as_float(*decl.value);
+            } else {
+                emit_expr(*decl.value);
+            }
         } else {
             switch (decl.declared) {
                 case TypeKind::Float:
@@ -960,7 +977,11 @@ private:
     void emit_index_assign(IndexAssign& stmt) {
         emit_expr_as_int(*stmt.index);
         push_value(TypeKind::Int);
-        emit_expr(*stmt.value);
+        if (stmt.value->widen_to_float) {
+            emit_expr_as_float(*stmt.value);
+        } else {
+            emit_expr(*stmt.value);
+        }
         pop_value(TypeKind::Int);  // индекс в %rcx
 
         emit_bounds(stmt, stmt.symbol->count, "%rcx");
@@ -974,7 +995,11 @@ private:
     }
 
     void emit_assign(Assign& stmt) {
-        emit_expr(*stmt.value);
+        if (stmt.value->widen_to_float) {
+            emit_expr_as_float(*stmt.value);
+        } else {
+            emit_expr(*stmt.value);
+        }
         if (stmt.symbol->type == TypeKind::Float) {
             instruction("movsd %xmm0, " + mem(stmt.symbol));
         } else {
@@ -1604,7 +1629,11 @@ private:
     }
 
     void emit_member_assign(MemberAssign& stmt) {
-        emit_expr(*stmt.value);
+        if (stmt.value->widen_to_float) {
+            emit_expr_as_float(*stmt.value);
+        } else {
+            emit_expr(*stmt.value);
+        }
 
         const StructDef* layout = stmt.symbol->layout != nullptr ? stmt.symbol->layout
                                                                 : stmt.symbol->pointee_layout;
@@ -1693,6 +1722,9 @@ private:
             if (arg->type == TypeKind::Array || arg->type == TypeKind::Struct) {
                 emit_object_address(*arg);
                 push_value(TypeKind::Int);
+            } else if (arg->widen_to_float) {
+                emit_expr_as_float(*arg);
+                push_value(TypeKind::Float);
             } else {
                 emit_expr(*arg);
                 push_value(arg->type);
@@ -1711,7 +1743,9 @@ private:
         for (int i = 0; i < count; ++i) {
             const int offset = pad + (count - 1 - i) * 8;
             const std::string address = std::to_string(offset) + "(%rsp)";
-            const TypeKind type = call_expr.args[static_cast<std::size_t>(i)]->type;
+            const TypeKind type = call_expr.args[static_cast<std::size_t>(i)]->widen_to_float
+                                      ? TypeKind::Float
+                                      : call_expr.args[static_cast<std::size_t>(i)]->type;
 
             if (type == TypeKind::Float) {
                 if (float_index >= MAX_FLOAT_ARGS) {

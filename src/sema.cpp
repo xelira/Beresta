@@ -605,6 +605,10 @@ private:
             }
         }
 
+        if (decl.value && declared == TK::Float && decl.value->type == TK::Int) {
+            decl.value->widen_to_float = true;
+        }
+
         Symbol symbol;
         symbol.name = decl.name;
         symbol.type = declared;
@@ -660,6 +664,9 @@ private:
                      type_name(value_type),
                  stmt.value->line, stmt.value->col, 1,
                  std::string("нужно значение типа ") + type_name(symbol->type));
+        }
+        if (symbol->type == TK::Float && value_type == TK::Int) {
+            stmt.value->widen_to_float = true;
         }
         stmt.symbol = symbol;
     }
@@ -825,6 +832,9 @@ private:
                      type_name(symbol->element) + " нельзя положить " + type_name(value_type),
                  stmt.value->line, stmt.value->col);
         }
+        if (symbol->element == TK::Float && value_type == TK::Int) {
+            stmt.value->widen_to_float = true;
+        }
 
         stmt.symbol = symbol;
     }
@@ -863,6 +873,9 @@ private:
             fail("в поле «" + stmt.field + "» типа " + type_name(field_type) +
                      " нельзя положить " + type_name(value_type),
                  stmt.value->line, stmt.value->col);
+        }
+        if (field_type == TK::Float && value_type == TK::Int) {
+            stmt.value->widen_to_float = true;
         }
 
         stmt.symbol = symbol;
@@ -931,6 +944,9 @@ private:
                 fail(std::string("функция обещает вернуть ") + type_name(*current_return_) +
                          ", а возвращает " + type_name(value_type),
                      stmt.value->line, stmt.value->col);
+            }
+            if (*current_return_ == TK::Float && value_type == TK::Int) {
+                stmt.value->widen_to_float = true;
             }
         } else if (*current_return_ != TK::Void) {
             fail(std::string("функция должна вернуть ") + type_name(*current_return_) +
@@ -1203,6 +1219,12 @@ private:
                 }
                 if (!matches) continue;
 
+                for (std::size_t i = 0; i < overload.params.size(); ++i) {
+                    if (overload.params[i] == TK::Float && arg_types[i] == TK::Int) {
+                        expr.args[i]->widen_to_float = true;
+                    }
+                }
+
                 expr.cname = overload.cname;
                 expr.is_builtin = true;
                 return record(expr, overload.ret);
@@ -1268,6 +1290,10 @@ private:
                          "» должен быть " + param_text(info) + ", а он " + actual,
                      expr.args[i]->line, expr.args[i]->col, 1,
                      signature(symbol->name, symbol->params, symbol->ret));
+            }
+
+            if (matches && info.type == TK::Float && arg_types[i] == TK::Int) {
+                expr.args[i]->widen_to_float = true;
             }
         }
 

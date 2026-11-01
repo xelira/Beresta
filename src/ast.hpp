@@ -22,6 +22,8 @@ struct Expr : Node {
     //: для выражений-указателей
     TypeKind pointee = TypeKind::Void;
     const StructDef* pointee_layout = nullptr;
+    //: значение типа число нужно превратить в дробь перед использованием
+    bool widen_to_float = false;
     //: для выражений-укладов
     const StructDef* layout = nullptr;
     int member_index = -1;
