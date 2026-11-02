@@ -60,6 +60,12 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"размер", {Overload{{TK::Map}, TK::Int, "b_map_size"}}},
         {"ключ_по_номеру", {Overload{{TK::Map, TK::Int}, TK::String, "b_map_key_at"}}},
         {"значение_по_номеру", {Overload{{TK::Map, TK::Int}, TK::String, "b_map_value_at"}}},
+        {"байт", {Overload{{TK::String, TK::Int}, TK::Int, "b_byte_at"}}},
+        {"символ", {Overload{{TK::Int}, TK::String, "b_char_from"}}},
+        {"строчные", {Overload{{TK::String}, TK::String, "b_lower"}}},
+        {"кодировать_б64", {Overload{{TK::String}, TK::String, "b_base64_encode"}}},
+        {"раскодировать_б64", {Overload{{TK::String}, TK::String, "b_base64_decode"}}},
+        {"отпечаток", {Overload{{TK::String}, TK::String, "b_sha1_hex"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},

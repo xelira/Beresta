@@ -25,7 +25,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* VERSION = "0.12.0";
+constexpr const char* VERSION = "0.13.0";
 
 void usage() {
     std::cout <<
