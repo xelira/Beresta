@@ -836,23 +836,33 @@ private:
 
         int int_index = 0;
         int float_index = 0;
+        int stack_index = 0;
+        const int stack_base = windows() ? 48 : 16;
+
         for (Param& param : func.params) {
             const Symbol* symbol = param.symbol;
-            if (!symbol->by_ref && symbol->type == TypeKind::Float) {
-                if (float_index >= max_float_args()) {
-                    fail("слишком много параметров-дробей", param.line, param.col);
+            const bool is_float = !symbol->by_ref && symbol->type == TypeKind::Float;
+
+            if (is_float) {
+                if (float_index < max_float_args()) {
+                    instruction("movsd " + float_arg(static_cast<std::size_t>(float_index++)) +
+                                ", " + slot_ref(symbol->slot));
+                } else {
+                    const std::string source =
+                        std::to_string(stack_base + 8 * stack_index++) + "(%rbp)";
+                    instruction("movsd " + source + ", %xmm0");
+                    instruction("movsd %xmm0, " + slot_ref(symbol->slot));
                 }
-                instruction("movsd " + float_arg(static_cast<std::size_t>(float_index++)) +
-                            ", " + slot_ref(symbol->slot));
             } else {
-                if (int_index >= max_int_args()) {
-                    fail("слишком много параметров", param.line, param.col,
-                         static_cast<int>(param.name.size()),
-                         windows() ? "на Windows максимум 4 обычных параметра"
-                                   : "в бересте максимум 6 обычных параметров");
+                if (int_index < max_int_args()) {
+                    instruction("mov " + int_arg(static_cast<std::size_t>(int_index++)) + ", " +
+                                slot_ref(symbol->slot));
+                } else {
+                    const std::string source =
+                        std::to_string(stack_base + 8 * stack_index++) + "(%rbp)";
+                    instruction("mov " + source + ", %rax");
+                    instruction("mov %rax, " + slot_ref(symbol->slot));
                 }
-                instruction("mov " + int_arg(static_cast<std::size_t>(int_index++)) + ", " +
-                            slot_ref(symbol->slot));
             }
         }
 
@@ -1935,42 +1945,67 @@ private:
         }
 
         const int count = static_cast<int>(call_expr.args.size());
-        int base = windows() ? 32 : 0;
-        if ((stack_depth_ + base / 8) % 2 != 0) base += 8;
-        if (base > 0) {
-            instruction("sub $" + std::to_string(base) + ", %rsp");
-            stack_depth_ += base / 8;
-        }
+
+        std::vector<int> argument_register(static_cast<std::size_t>(count), -1);
+        std::vector<bool> argument_float(static_cast<std::size_t>(count), false);
+        std::vector<int> argument_stack(static_cast<std::size_t>(count), -1);
 
         int int_index = 0;
         int float_index = 0;
-        for (int i = 0; i < count; ++i) {
-            const int offset = base + (count - 1 - i) * 8;
-            const std::string address = std::to_string(offset) + "(%rsp)";
-            const TypeKind type = call_expr.args[static_cast<std::size_t>(i)]->widen_to_float
-                                      ? TypeKind::Float
-                                      : call_expr.args[static_cast<std::size_t>(i)]->type;
+        int stack_count = 0;
 
-            if (type == TypeKind::Float) {
-                if (float_index >= max_float_args()) {
-                    fail("слишком много аргументов-дробей", call_expr.line, call_expr.col);
-                }
-                instruction("movsd " + address + ", " +
-                            float_arg(static_cast<std::size_t>(float_index++)));
+        for (int i = 0; i < count; ++i) {
+            TypeKind type = call_expr.args[static_cast<std::size_t>(i)]->widen_to_float
+                                ? TypeKind::Float
+                                : call_expr.args[static_cast<std::size_t>(i)]->type;
+            if (type == TypeKind::Array || type == TypeKind::Struct ||
+                type == TypeKind::Slice) {
+                type = TypeKind::Int;
+            }
+
+            if (type == TypeKind::Float && float_index < max_float_args()) {
+                argument_register[static_cast<std::size_t>(i)] = float_index++;
+                argument_float[static_cast<std::size_t>(i)] = true;
+            } else if (type != TypeKind::Float && int_index < max_int_args()) {
+                argument_register[static_cast<std::size_t>(i)] = int_index++;
             } else {
-                if (int_index >= max_int_args()) {
-                    fail("слишком много аргументов", call_expr.line, call_expr.col, 1,
-                         windows() ? "на Windows максимум 4 обычных аргумента"
-                                   : "в бересте максимум 6 обычных аргументов");
-                }
-                instruction("mov " + address + ", " +
-                            int_arg(static_cast<std::size_t>(int_index++)));
+                argument_stack[static_cast<std::size_t>(i)] = stack_count++;
+            }
+        }
+
+        const int shadow = windows() ? 32 : 0;
+        int total = shadow + stack_count * 8;
+        if ((stack_depth_ + total / 8) % 2 != 0) total += 8;
+        if (total > 0) {
+            instruction("sub $" + std::to_string(total) + ", %rsp");
+            stack_depth_ += total / 8;
+        }
+
+        for (int i = 0; i < count; ++i) {
+            if (argument_stack[static_cast<std::size_t>(i)] < 0) continue;
+            const int source = total + (count - 1 - i) * 8;
+            const int destination = shadow + argument_stack[static_cast<std::size_t>(i)] * 8;
+            instruction("mov " + std::to_string(source) + "(%rsp), %rax");
+            instruction("mov %rax, " + std::to_string(destination) + "(%rsp)");
+        }
+
+        for (int i = 0; i < count; ++i) {
+            const int index = argument_register[static_cast<std::size_t>(i)];
+            if (index < 0) continue;
+            const int source = total + (count - 1 - i) * 8;
+
+            if (argument_float[static_cast<std::size_t>(i)]) {
+                instruction("movsd " + std::to_string(source) + "(%rsp), " +
+                            float_arg(static_cast<std::size_t>(index)));
+            } else {
+                instruction("mov " + std::to_string(source) + "(%rsp), " +
+                            int_arg(static_cast<std::size_t>(index)));
             }
         }
 
         instruction("call " + call_symbol(call_expr.cname));
 
-        const int cleanup = base + count * 8;
+        const int cleanup = total + count * 8;
         if (cleanup > 0) {
             instruction("add $" + std::to_string(cleanup) + ", %rsp");
             stack_depth_ = base_depth;

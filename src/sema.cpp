@@ -435,25 +435,6 @@ private:
         symbol.ret = symbol.type;
         symbol.params = param_types;
 
-        int usual_params = 0;
-        int float_params = 0;
-        for (const ParamInfo& info : param_types) {
-            if (info.type == TK::Float) {
-                ++float_params;
-            } else {
-                ++usual_params;
-            }
-        }
-        if (usual_params > 6) {
-            fail("слишком много параметров у «" + decl.name + "»", decl.line, decl.col,
-                 static_cast<int>(decl.name.size()),
-                 "бэкенд x86-64 передаёт не больше 6 обычных параметров");
-        }
-        if (float_params > 8) {
-            fail("слишком много параметров-дробей у «" + decl.name + "»", decl.line, decl.col,
-                 static_cast<int>(decl.name.size()),
-                 "бэкенд x86-64 передаёт не больше 8 дробных параметров");
-        }
         symbol.cname = fresh_cname("f");
         symbol.line = decl.line;
         symbol.col = decl.col;
