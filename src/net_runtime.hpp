@@ -9,6 +9,7 @@ inline const char* NET_RUNTIME_C = R"C(
 
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -736,4 +737,300 @@ char* b_sha1_base64(const char* text) {
     return b_base64_raw(digest, 20);
 }
 
+
+/* --- SHA-256, случайные коды, утверждения --------------------------- */
+
+typedef struct {
+    uint32_t state[8];
+    uint64_t length;
+    unsigned char buffer[64];
+    size_t used;
+} BSha256;
+
+static uint32_t b_ror32(uint32_t value, int bits) {
+    return (value >> bits) | (value << (32 - bits));
+}
+
+static void b_sha256_block(BSha256* sha, const unsigned char* block) {
+    static const uint32_t constants[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+        0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+
+    uint32_t words[64];
+    for (int i = 0; i < 16; ++i) {
+        words[i] = ((uint32_t)block[i * 4] << 24) | ((uint32_t)block[i * 4 + 1] << 16) |
+                   ((uint32_t)block[i * 4 + 2] << 8) | (uint32_t)block[i * 4 + 3];
+    }
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = b_ror32(words[i - 15], 7) ^ b_ror32(words[i - 15], 18) ^
+                      (words[i - 15] >> 3);
+        uint32_t s1 = b_ror32(words[i - 2], 17) ^ b_ror32(words[i - 2], 19) ^
+                      (words[i - 2] >> 10);
+        words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+    }
+
+    uint32_t a = sha->state[0], b = sha->state[1], c = sha->state[2], d = sha->state[3];
+    uint32_t e = sha->state[4], f = sha->state[5], g = sha->state[6], h = sha->state[7];
+
+    for (int i = 0; i < 64; ++i) {
+        uint32_t s1 = b_ror32(e, 6) ^ b_ror32(e, 11) ^ b_ror32(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + s1 + ch + constants[i] + words[i];
+        uint32_t s0 = b_ror32(a, 2) ^ b_ror32(a, 13) ^ b_ror32(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = s0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    sha->state[0] += a; sha->state[1] += b; sha->state[2] += c; sha->state[3] += d;
+    sha->state[4] += e; sha->state[5] += f; sha->state[6] += g; sha->state[7] += h;
+}
+
+static void b_sha256_init(BSha256* sha) {
+    sha->state[0] = 0x6a09e667; sha->state[1] = 0xbb67ae85;
+    sha->state[2] = 0x3c6ef372; sha->state[3] = 0xa54ff53a;
+    sha->state[4] = 0x510e527f; sha->state[5] = 0x9b05688c;
+    sha->state[6] = 0x1f83d9ab; sha->state[7] = 0x5be0cd19;
+    sha->length = 0; sha->used = 0;
+}
+
+static void b_sha256_update(BSha256* sha, const unsigned char* data, size_t size) {
+    sha->length += (uint64_t)size * 8;
+    while (size > 0) {
+        size_t room = 64 - sha->used;
+        size_t take = size < room ? size : room;
+        memcpy(sha->buffer + sha->used, data, take);
+        sha->used += take; data += take; size -= take;
+        if (sha->used == 64) { b_sha256_block(sha, sha->buffer); sha->used = 0; }
+    }
+}
+
+static void b_sha256_final(BSha256* sha, unsigned char digest[32]) {
+    unsigned char pad[72];
+    size_t pad_size = 0;
+    uint64_t bits = sha->length;
+
+    pad[pad_size++] = 0x80;
+    while ((sha->used + pad_size) % 64 != 56) pad[pad_size++] = 0;
+    for (int i = 7; i >= 0; --i) pad[pad_size++] = (unsigned char)((bits >> (i * 8)) & 0xFF);
+    b_sha256_update(sha, pad, pad_size);
+
+    for (int i = 0; i < 8; ++i) {
+        digest[i * 4] = (unsigned char)(sha->state[i] >> 24);
+        digest[i * 4 + 1] = (unsigned char)(sha->state[i] >> 16);
+        digest[i * 4 + 2] = (unsigned char)(sha->state[i] >> 8);
+        digest[i * 4 + 3] = (unsigned char)(sha->state[i]);
+    }
+}
+
+char* b_sha256_hex(const char* text) {
+    BSha256 sha;
+    b_sha256_init(&sha);
+    b_sha256_update(&sha, (const unsigned char*)text, strlen(text));
+
+    unsigned char digest[32];
+    b_sha256_final(&sha, digest);
+
+    static const char* hex = "0123456789abcdef";
+    char* result = (char*)b_gc_alloc(65);
+    for (int i = 0; i < 32; ++i) {
+        result[i * 2] = hex[digest[i] >> 4];
+        result[i * 2 + 1] = hex[digest[i] & 15];
+    }
+    result[64] = 0;
+    return result;
+}
+
+char* b_random_code(long long length) {
+    if (length <= 0) length = 16;
+    if (length > 256) length = 256;
+
+    unsigned char bytes[256];
+    int filled = 0;
+
+#ifdef _WIN32
+    for (int i = 0; i < (int)length; ++i) bytes[i] = (unsigned char)(rand() & 0xFF);
+    filled = 1;
+#else
+    FILE* source = fopen("/dev/urandom", "rb");
+    if (source != 0) {
+        if (fread(bytes, 1, (size_t)length, source) == (size_t)length) filled = 1;
+        fclose(source);
+    }
+    if (!filled) {
+        for (int i = 0; i < (int)length; ++i) bytes[i] = (unsigned char)(rand() & 0xFF);
+    }
+#endif
+
+    static const char* hex = "0123456789abcdef";
+    char* result = (char*)b_gc_alloc((size_t)length * 2 + 1);
+    for (int i = 0; i < (int)length; ++i) {
+        result[i * 2] = hex[bytes[i] >> 4];
+        result[i * 2 + 1] = hex[bytes[i] & 15];
+    }
+    result[length * 2] = 0;
+    return result;
+}
+
+void b_assert(long long condition, const char* message) {
+    if (!condition) b_abort(message);
+}
+
+/* --- HTTP-клиент ---------------------------------------------------- */
+
+char* b_http_get(const char* url) {
+    int secure = 0;
+    const char* rest = url;
+
+    if (strncmp(rest, "https://", 8) == 0) {
+        secure = 1;
+        rest += 8;
+    } else if (strncmp(rest, "http://", 7) == 0) {
+        rest += 7;
+    } else {
+        return (char*)"";
+    }
+
+#ifndef BERESTA_TLS
+    if (secure) return (char*)"";
+#endif
+
+    char host[256] = {0};
+    char port[16] = {0};
+    char path[1024] = {0};
+
+    size_t index = 0;
+    while (rest[index] != 0 && rest[index] != ':' && rest[index] != '/' &&
+           index < sizeof(host) - 1) {
+        host[index] = rest[index];
+        index += 1;
+    }
+    if (host[0] == 0) return (char*)"";
+
+    const char* tail = rest + index;
+    if (*tail == ':') {
+        tail += 1;
+        size_t position = 0;
+        while (*tail != 0 && *tail != '/' && position < sizeof(port) - 1) {
+            port[position++] = *tail++;
+        }
+        port[position] = 0;
+    }
+    if (port[0] == 0) strcpy(port, secure ? "443" : "80");
+
+    if (*tail == '/') {
+        strncpy(path, tail, sizeof(path) - 1);
+    } else {
+        strcpy(path, "/");
+    }
+
+    struct addrinfo hints;
+    struct addrinfo* addresses = 0;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(host, port, &hints, &addresses) != 0) return (char*)"";
+
+    int fd = -1;
+    for (struct addrinfo* address = addresses; address != 0; address = address->ai_next) {
+        fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(addresses);
+    if (fd < 0) return (char*)"";
+
+#ifdef BERESTA_TLS
+    SSL_CTX* context = 0;
+    SSL* ssl = 0;
+    if (secure) {
+        OPENSSL_init_ssl(0, 0);
+        context = SSL_CTX_new(TLS_client_method());
+        if (context == 0) {
+            close(fd);
+            return (char*)"";
+        }
+        SSL_CTX_set_verify(context, SSL_VERIFY_NONE, 0);
+        ssl = SSL_new(context);
+        SSL_set_fd(ssl, fd);
+        if (SSL_connect(ssl) <= 0) {
+            SSL_free(ssl);
+            SSL_CTX_free(context);
+            close(fd);
+            return (char*)"";
+        }
+    }
+#endif
+
+    char request[2048];
+    snprintf(request, sizeof(request),
+             "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: beresta\r\n"
+             "Connection: close\r\n\r\n",
+             path, host);
+
+#ifdef BERESTA_TLS
+    if (secure) SSL_write(ssl, request, (int)strlen(request));
+    else
+#endif
+    send(fd, request, strlen(request), 0);
+
+    size_t capacity = 4096;
+    size_t used = 0;
+    char* buffer = (char*)malloc(capacity);
+    if (buffer == 0) {
+#ifdef BERESTA_TLS
+        if (ssl) { SSL_free(ssl); SSL_CTX_free(context); }
+#endif
+        close(fd);
+        return (char*)"";
+    }
+
+    for (;;) {
+        if (used + 2049 > capacity) {
+            capacity *= 2;
+            char* grown = (char*)realloc(buffer, capacity);
+            if (grown == 0) break;
+            buffer = grown;
+        }
+
+        int got;
+#ifdef BERESTA_TLS
+        got = secure ? SSL_read(ssl, buffer + used, 2048)
+                     : (int)recv(fd, buffer + used, 2048, 0);
+#else
+        got = (int)recv(fd, buffer + used, 2048, 0);
+#endif
+        if (got <= 0) break;
+        used += (size_t)got;
+    }
+    buffer[used] = 0;
+
+    char* result = (char*)b_gc_alloc(used + 1);
+    memcpy(result, buffer, used + 1);
+    free(buffer);
+
+#ifdef BERESTA_TLS
+    if (ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        SSL_CTX_free(context);
+    }
+#endif
+    close(fd);
+    return result;
+}
 )C";

@@ -48,7 +48,8 @@ jobs:
           ./build/berestac build examples/веб_разбор.бер --target windows -o /tmp/webparse.exe
           ./build/berestac build examples/websocket.бер --target windows -o /tmp/ws.exe
           ./build/berestac build examples/https.бер --target windows -o /tmp/https.exe
-          file /tmp/site.exe /tmp/slices.exe /tmp/map.exe /tmp/json.exe /tmp/webparse.exe /tmp/ws.exe /tmp/https.exe
+          ./build/berestac build examples/клиент.бер --target windows -o /tmp/client.exe
+          file /tmp/site.exe /tmp/slices.exe /tmp/map.exe /tmp/json.exe /tmp/webparse.exe /tmp/ws.exe /tmp/https.exe /tmp/client.exe
 
       - name: Собрать лаунчеры
         run: |

@@ -75,6 +75,10 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"тлс_ответить", {Overload{{TK::Int, TK::String}, TK::Int, "b_tls_write"}}},
         {"тлс_закрыть", {Overload{{TK::Int}, TK::Void, "b_tls_close"}}},
         {"тлс_закрыть_сервер", {Overload{{TK::Int}, TK::Void, "b_tls_close_server"}}},
+        {"запрос_сети", {Overload{{TK::String}, TK::String, "b_http_get"}}},
+        {"отпечаток_256", {Overload{{TK::String}, TK::String, "b_sha256_hex"}}},
+        {"случайный_код", {Overload{{TK::Int}, TK::String, "b_random_code"}}},
+        {"утверждать", {Overload{{TK::Bool, TK::String}, TK::Void, "b_assert"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},
@@ -1326,7 +1330,7 @@ private:
     }
 
     TK check_call(Call& expr) {
-        if (expr.name.rfind("тлс_", 0) == 0) {
+        if (expr.name.rfind("тлс_", 0) == 0 || expr.name == "запрос_сети") {
             program_.uses_tls = true;
         }
 

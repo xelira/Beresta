@@ -24,7 +24,7 @@ install: $(TARGET)
 
 # Прогоняет примеры. Это не тесты, это демонстрация.
 # «угадай.бер» интерактивный, «сайт.бер» работает вечно — в общий прогон не входят.
-EXAMPLES := $(filter-out examples/угадай.бер examples/сайт.бер examples/websocket.бер examples/https.бер,$(wildcard examples/*.бер))
+EXAMPLES := $(filter-out examples/угадай.бер examples/сайт.бер examples/websocket.бер examples/https.бер examples/клиент.бер,$(wildcard examples/*.бер))
 
 examples: $(TARGET)
 	@for file in $(EXAMPLES); do \
