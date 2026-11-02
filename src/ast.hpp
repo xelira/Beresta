@@ -243,4 +243,6 @@ struct Program : Node {
     std::vector<std::unique_ptr<Symbol>> symbols;
     //: Описания укладов, на которые ссылается дерево.
     std::vector<std::unique_ptr<StructDef>> structs;
+    //: программа использует TLS — нужен OpenSSL
+    bool uses_tls = false;
 };

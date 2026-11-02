@@ -69,6 +69,12 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"отпечаток_б64", {Overload{{TK::String}, TK::String, "b_sha1_base64"}}},
         {"из_байта", {Overload{{TK::Int}, TK::String, "b_byte_string"}}},
         {"исключающее_или", {Overload{{TK::Int, TK::Int}, TK::Int, "b_xor"}}},
+        {"тлс_сервер", {Overload{{TK::Int, TK::String, TK::String}, TK::Int, "b_tls_server"}}},
+        {"тлс_принять", {Overload{{TK::Int}, TK::Int, "b_tls_accept"}}},
+        {"тлс_прочитать", {Overload{{TK::Int, TK::Int}, TK::String, "b_tls_read"}}},
+        {"тлс_ответить", {Overload{{TK::Int, TK::String}, TK::Int, "b_tls_write"}}},
+        {"тлс_закрыть", {Overload{{TK::Int}, TK::Void, "b_tls_close"}}},
+        {"тлс_закрыть_сервер", {Overload{{TK::Int}, TK::Void, "b_tls_close_server"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},
@@ -1320,6 +1326,10 @@ private:
     }
 
     TK check_call(Call& expr) {
+        if (expr.name.rfind("тлс_", 0) == 0) {
+            program_.uses_tls = true;
+        }
+
         if (expr.name == "нарезать" && scope_->lookup(expr.name) == nullptr) {
             if (expr.args.size() != 3) {
                 fail("«нарезать» ждёт три аргумента: массив, начало, конец", expr.line, expr.col);

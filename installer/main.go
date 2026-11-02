@@ -352,11 +352,11 @@ func checkLinuxTools() error {
 func installSystemDeps() error {
 	switch {
 	case commandExists("apt-get"):
-		return runInteractive("apt-get", "install", "-y", "g++", "binutils")
+		return runInteractive("apt-get", "install", "-y", "g++", "binutils", "libssl-dev")
 	case commandExists("dnf"):
-		return runInteractive("dnf", "install", "-y", "gcc-c++", "binutils")
+		return runInteractive("dnf", "install", "-y", "gcc-c++", "binutils", "openssl-devel")
 	case commandExists("pacman"):
-		return runInteractive("pacman", "-S", "--noconfirm", "gcc", "binutils")
+		return runInteractive("pacman", "-S", "--noconfirm", "gcc", "binutils", "openssl")
 	}
 	return errors.New("неизвестный пакетный менеджер; поставьте g++ и binutils вручную")
 }

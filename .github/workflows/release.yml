@@ -35,7 +35,7 @@ jobs:
       - name: Собрать нативный компилятор для Windows
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-mingw-w64-x86-64
+          sudo apt-get install -y g++-mingw-w64-x86-64 libssl-dev
           make berestac-windows CROSS=x86_64-w64-mingw32-g++
           cp build/berestac.exe dist/berestac-windows-amd64.exe
 
@@ -47,7 +47,8 @@ jobs:
           ./build/berestac build examples/json.бер --target windows -o /tmp/json.exe
           ./build/berestac build examples/веб_разбор.бер --target windows -o /tmp/webparse.exe
           ./build/berestac build examples/websocket.бер --target windows -o /tmp/ws.exe
-          file /tmp/site.exe /tmp/slices.exe /tmp/map.exe /tmp/json.exe /tmp/webparse.exe /tmp/ws.exe
+          ./build/berestac build examples/https.бер --target windows -o /tmp/https.exe
+          file /tmp/site.exe /tmp/slices.exe /tmp/map.exe /tmp/json.exe /tmp/webparse.exe /tmp/ws.exe /tmp/https.exe
 
       - name: Собрать лаунчеры
         run: |
@@ -72,6 +73,7 @@ jobs:
           ./build/berestac version
           ./dist/beresta-linux-amd64 run examples/привет.бер
           ./dist/beresta-linux-amd64 run examples/модули.бер
+          ./build/berestac build examples/https.бер -o /tmp/https-linux
 
       - name: Контрольные суммы
         run: |

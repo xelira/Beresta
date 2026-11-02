@@ -601,6 +601,43 @@ char* b_map_value_at(void* map, long long index) {
 }
 
 
+
+/* --- TLS: на Windows пока заглушки ---------------------------------- */
+
+long long b_tls_server(long long port, const char* certificate, const char* key) {
+    (void)port;
+    (void)certificate;
+    (void)key;
+    return -1;
+}
+
+long long b_tls_accept(long long server) {
+    (void)server;
+    return -1;
+}
+
+char* b_tls_read(long long connection, long long limit) {
+    (void)connection;
+    (void)limit;
+    return (char*)"";
+}
+
+long long b_tls_write(long long connection, const char* text) {
+    (void)connection;
+    (void)text;
+    return -1;
+}
+
+long long b_tls_close(long long connection) {
+    (void)connection;
+    return 0;
+}
+
+long long b_tls_close_server(long long server) {
+    (void)server;
+    return 0;
+}
+
 /* --- байты, base64, sha1, регистр ----------------------------------- */
 
 long long b_xor(long long a, long long b) { return a ^ b; }

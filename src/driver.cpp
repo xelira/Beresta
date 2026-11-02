@@ -123,8 +123,9 @@ fs::path make_temp_dir() {
 #endif
 }
 
-std::string read_asm_source(const std::string& input, Target target) {
+std::string read_asm_source(const std::string& input, Target target, bool& uses_tls) {
     Compilation compilation = compile_program(input);
+    uses_tls = compilation.program.uses_tls;
     return generate(compilation.program, target);
 }
 
@@ -143,7 +144,8 @@ std::string build(const std::string& input, const BuildOptions& options) {
     const fs::path input_path = path_from_utf8(input);
     if (!fs::exists(input_path)) fail("файл «" + input + "» не найден");
 
-    const std::string assembly = read_asm_source(input, options.target);
+    bool uses_tls = false;
+    const std::string assembly = read_asm_source(input, options.target, uses_tls);
 
     fs::path asm_path;
     if (!options.asm_path.empty()) {
@@ -209,14 +211,16 @@ std::string build(const std::string& input, const BuildOptions& options) {
         extra_object = " " + quote(temp_runtime_obj.string()) + " -lws2_32";
     } else {
         write_file(temp_net.string(), NET_RUNTIME_C);
+        const std::string tls_define = uses_tls ? " -DBERESTA_TLS" : "";
         const int net_status =
-            run_command(quote_program(linker) + " -O2 -c -o " + quote(temp_net_obj.string()) +
-                        " " + quote(temp_net.string()));
+            run_command(quote_program(linker) + " -O2 -c" + tls_define + " -o " +
+                        quote(temp_net_obj.string()) + " " + quote(temp_net.string()));
         if (net_status != 0) {
             fs::remove_all(temp_dir);
             fail("не удалось собрать сетевой рантайм");
         }
         extra_object = " " + quote(temp_net_obj.string());
+        if (uses_tls) extra_object += " -lssl -lcrypto";
     }
 
     const int link_status = run_command(quote_program(linker) + " -o " + quote(output_path.string()) +

@@ -49,7 +49,8 @@
 - [ ] Проверка Windows-сети под Wine и на реальной Windows.
 - [ ] Keep-alive и таймауты.
 - [ ] Ограничение размера запроса, защита от переполнения.
-- [ ] HTTPS/TLS (через libcrypto/OpenSSL или свой минимальный TLS).
+- [x] HTTPS/TLS через OpenSSL (Linux).
+- [ ] TLS на Windows.
 - [x] WebSocket: рукопожатие, текстовые кадры, ping/pong.
 - [ ] Бинарные кадры и кадры >64 КБ.
 - [ ] HTTP/2 (далёкая цель).

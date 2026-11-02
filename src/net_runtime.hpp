@@ -3,6 +3,10 @@
 //: Сетевой рантайм для Linux: сокеты и строковые помощники.
 //: Компилируется вместе с программой тем же cc, что и линковка.
 inline const char* NET_RUNTIME_C = R"C(
+#ifdef BERESTA_TLS
+#include <openssl/ssl.h>
+#endif
+
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <netinet/in.h>
@@ -351,6 +355,102 @@ char* b_map_value_at(void* map, long long index) {
     return b_map_data(map) + entries[index].val_off;
 }
 
+
+
+#ifdef BERESTA_TLS
+typedef struct {
+    int fd;
+    SSL_CTX* context;
+} BTlsServer;
+
+long long b_tls_server(long long port, const char* certificate, const char* key) {
+    OPENSSL_init_ssl(0, 0);
+
+    SSL_CTX* context = SSL_CTX_new(TLS_server_method());
+    if (context == 0) return -1;
+
+    if (SSL_CTX_use_certificate_file(context, certificate, SSL_FILETYPE_PEM) <= 0 ||
+        SSL_CTX_use_PrivateKey_file(context, key, SSL_FILETYPE_PEM) <= 0) {
+        SSL_CTX_free(context);
+        return -1;
+    }
+
+    long listener = b_listen(port);
+    if (listener < 0) {
+        SSL_CTX_free(context);
+        return -1;
+    }
+
+    BTlsServer* server = (BTlsServer*)malloc(sizeof(BTlsServer));
+    if (server == 0) {
+        close((int)listener);
+        SSL_CTX_free(context);
+        return -1;
+    }
+    server->fd = (int)listener;
+    server->context = context;
+    return (long long)server;
+}
+
+long long b_tls_accept(long long server) {
+    if (server <= 0) return -1;
+    BTlsServer* info = (BTlsServer*)server;
+
+    int client = accept(info->fd, 0, 0);
+    if (client < 0) return -1;
+
+    SSL* ssl = SSL_new(info->context);
+    if (ssl == 0) {
+        close(client);
+        return -1;
+    }
+
+    SSL_set_fd(ssl, client);
+    if (SSL_accept(ssl) <= 0) {
+        SSL_free(ssl);
+        close(client);
+        return -1;
+    }
+    return (long long)ssl;
+}
+
+char* b_tls_read(long long connection, long long limit) {
+    if (limit <= 0) limit = 4096;
+    char* buffer = (char*)b_gc_alloc((size_t)limit + 1);
+    int got = SSL_read((SSL*)connection, buffer, (int)limit);
+    if (got < 0) got = 0;
+    buffer[got] = 0;
+    return buffer;
+}
+
+long long b_tls_write(long long connection, const char* text) {
+    size_t total = strlen(text);
+    size_t sent = 0;
+    while (sent < total) {
+        int part = SSL_write((SSL*)connection, text + sent, (int)(total - sent));
+        if (part <= 0) return -1;
+        sent += (size_t)part;
+    }
+    return (long long)sent;
+}
+
+long long b_tls_close(long long connection) {
+    SSL* ssl = (SSL*)connection;
+    if (ssl == 0) return 0;
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    return 0;
+}
+
+long long b_tls_close_server(long long server) {
+    BTlsServer* info = (BTlsServer*)server;
+    if (info == 0) return 0;
+    close(info->fd);
+    SSL_CTX_free(info->context);
+    free(info);
+    return 0;
+}
+#endif
 
 /* --- байты, base64, sha1, регистр ----------------------------------- */
 
