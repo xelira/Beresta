@@ -354,6 +354,8 @@ char* b_map_value_at(void* map, long long index) {
 
 /* --- байты, base64, sha1, регистр ----------------------------------- */
 
+long long b_xor(long long a, long long b) { return a ^ b; }
+
 long long b_byte_at(const char* text, long long index) {
     size_t size = strlen(text);
     if (index < 0 || (size_t)index >= size) return 0;
@@ -382,6 +384,13 @@ char* b_char_from(long long code) {
         result[3] = (char)(0x80 | (value & 0x3F));
         result[4] = 0;
     }
+    return result;
+}
+
+char* b_byte_string(long long code) {
+    char* result = (char*)b_gc_alloc(2);
+    result[0] = (char)(code & 0xFF);
+    result[1] = 0;
     return result;
 }
 
@@ -428,17 +437,16 @@ char* b_lower(const char* text) {
 static const char B64_TABLE[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-char* b_base64_encode(const char* text) {
-    size_t size = strlen(text);
+char* b_base64_raw(const unsigned char* data, size_t size) {
     char* result = (char*)b_gc_alloc(4 * ((size + 2) / 3) + 1);
     size_t input = 0;
     size_t output = 0;
 
     while (input < size) {
         int remain = (int)(size - input);
-        unsigned a = (unsigned char)text[input++];
-        unsigned b = remain > 1 ? (unsigned char)text[input++] : 0;
-        unsigned c = remain > 2 ? (unsigned char)text[input++] : 0;
+        unsigned a = data[input++];
+        unsigned b = remain > 1 ? data[input++] : 0;
+        unsigned c = remain > 2 ? data[input++] : 0;
 
         result[output++] = B64_TABLE[a >> 2];
         result[output++] = B64_TABLE[((a & 3) << 4) | (b >> 4)];
@@ -448,6 +456,10 @@ char* b_base64_encode(const char* text) {
 
     result[output] = 0;
     return result;
+}
+
+char* b_base64_encode(const char* text) {
+    return b_base64_raw((const unsigned char*)text, strlen(text));
 }
 
 static int b64_value(char ch) {
@@ -611,6 +623,17 @@ char* b_sha1_hex(const char* text) {
     }
     result[40] = 0;
     return result;
+}
+
+
+char* b_sha1_base64(const char* text) {
+    BSha1 sha;
+    b_sha1_init(&sha);
+    b_sha1_update(&sha, (const unsigned char*)text, strlen(text));
+
+    unsigned char digest[20];
+    b_sha1_final(&sha, digest);
+    return b_base64_raw(digest, 20);
 }
 
 )C";

@@ -66,6 +66,9 @@ const std::unordered_map<std::string, std::vector<Overload>>& builtin_table() {
         {"кодировать_б64", {Overload{{TK::String}, TK::String, "b_base64_encode"}}},
         {"раскодировать_б64", {Overload{{TK::String}, TK::String, "b_base64_decode"}}},
         {"отпечаток", {Overload{{TK::String}, TK::String, "b_sha1_hex"}}},
+        {"отпечаток_б64", {Overload{{TK::String}, TK::String, "b_sha1_base64"}}},
+        {"из_байта", {Overload{{TK::Int}, TK::String, "b_byte_string"}}},
+        {"исключающее_или", {Overload{{TK::Int, TK::Int}, TK::Int, "b_xor"}}},
         {"к_строке",
          {
              Overload{{TK::Int}, TK::String, "b_str_from_int"},

@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-var toolVersion = "0.13.0"
+var toolVersion = "0.14.0"
 
 var (
 	flagPrefix = flag.String("prefix", "", "куда установить (Linux; по умолчанию ~/.local)")
